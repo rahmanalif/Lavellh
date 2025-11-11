@@ -1,0 +1,221 @@
+### Test Server
+GET http://localhost:5100/
+Content-Type: application/json
+
+###
+
+### Test API
+GET http://localhost:5100/api/test
+Content-Type: application/json
+
+###
+
+### Register User with Email
+POST http://localhost:5100/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "John Doe",
+  "email": "john.doe@example.com",
+  "password": "securePass123",
+  "termsAccepted": true
+}
+
+###
+
+### Register User with Phone Number
+POST http://localhost:5100/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Jane Smith",
+  "phoneNumber": "+1234567890",
+  "password": "securePass123",
+  "termsAccepted": true
+}
+
+###
+
+### Register User with Both Email and Phone
+POST http://localhost:5100/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Bob Johnson",
+  "email": "bob.johnson@example.com",
+  "phoneNumber": "+0987654321",
+  "password": "securePass123",
+  "termsAccepted": true
+}
+
+###
+
+### Login with Email
+POST http://localhost:5100/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "password": "securePass123"
+}
+
+###
+
+### Login with Phone Number
+POST http://localhost:5100/api/auth/login
+Content-Type: application/json
+
+{
+  "phoneNumber": "+1234567890",
+  "password": "securePass123"
+}
+
+###
+
+### Get Current User (Protected Route)
+# Replace YOUR_TOKEN_HERE with the token from login/register response
+GET http://localhost:5100/api/auth/me
+Authorization: Bearer YOUR_TOKEN_HERE
+
+###
+
+### Test Error: Register without terms
+POST http://localhost:5100/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Test User",
+  "email": "test@example.com",
+  "password": "password123",
+  "termsAccepted": false
+}
+
+###
+
+### Test Error: Register without email or phone
+POST http://localhost:5100/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Test User",
+  "password": "password123",
+  "termsAccepted": true
+}
+
+###
+
+### Test Error: Invalid credentials
+POST http://localhost:5100/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "wrong@example.com",
+  "password": "wrongpassword"
+}
+
+###
+### ============================================
+### PASSWORD RESET ENDPOINTS
+### ============================================
+###
+
+### 1. Request Password Reset (Email)
+POST http://localhost:5100/api/auth/forgot-password
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com"
+}
+
+###
+
+### 2. Request Password Reset (Phone)
+POST http://localhost:5100/api/auth/forgot-password
+Content-Type: application/json
+
+{
+  "phoneNumber": "+1234567890"
+}
+
+###
+
+### 3. Verify OTP (Email)
+# Replace 123456 with the OTP received
+POST http://localhost:5100/api/auth/verify-otp
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "otp": "123456"
+}
+
+###
+
+### 4. Verify OTP (Phone)
+# Replace 123456 with the OTP received
+POST http://localhost:5100/api/auth/verify-otp
+Content-Type: application/json
+
+{
+  "phoneNumber": "+1234567890",
+  "otp": "123456"
+}
+
+###
+
+### 5. Reset Password (Email)
+# Replace 123456 with the valid OTP
+POST http://localhost:5100/api/auth/reset-password
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "otp": "123456",
+  "newPassword": "newSecurePassword123"
+}
+
+###
+
+### 6. Reset Password (Phone)
+# Replace 123456 with the valid OTP
+POST http://localhost:5100/api/auth/reset-password
+Content-Type: application/json
+
+{
+  "phoneNumber": "+1234567890",
+  "otp": "123456",
+  "newPassword": "newSecurePassword123"
+}
+
+###
+
+### Test Error: Missing OTP
+POST http://localhost:5100/api/auth/verify-otp
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com"
+}
+
+###
+
+### Test Error: Invalid OTP format
+POST http://localhost:5100/api/auth/verify-otp
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "otp": "12345"
+}
+
+###
+
+### Test Error: Password too short
+POST http://localhost:5100/api/auth/reset-password
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "otp": "123456",
+  "newPassword": "123"
+}

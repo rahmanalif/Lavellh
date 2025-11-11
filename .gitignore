@@ -1,0 +1,8 @@
+node_modules/
+.env
+*.log
+.DS_Store
+
+# Uploaded files (ID cards, profile pictures, etc.)
+uploads/
+uploads/**/
