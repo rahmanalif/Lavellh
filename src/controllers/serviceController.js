@@ -1,0 +1,632 @@
+const Service = require('../models/Service');
+const Provider = require('../models/Provider');
+const Category = require('../models/Category');
+const { uploadToCloudinary } = require('../utility/cloudinary');
+
+/**
+ * Create Service (Provider only)
+ * POST /api/providers/services
+ */
+exports.createService = async (req, res) => {
+  try {
+    const {
+      category,
+      headline,
+      description,
+      whyChooseUs,
+      basePrice,
+      appointmentEnabled,
+      appointmentSlots
+    } = req.body;
+
+    // Validate file upload
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service photo is required'
+      });
+    }
+
+    // Validate required fields
+    if (!category || !headline || !description) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category, headline, and description are required'
+      });
+    }
+
+    // Verify category exists
+    const categoryExists = await Category.findById(category);
+    if (!categoryExists) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    // Verify provider exists (from auth middleware, req.user should have provider info)
+    const provider = await Provider.findOne({ userId: req.user._id });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found. Please complete provider registration first.'
+      });
+    }
+
+    // Parse appointment data
+    const isAppointmentEnabled = appointmentEnabled === 'true' || appointmentEnabled === true;
+    const parsedAppointmentSlots = appointmentSlots ? JSON.parse(appointmentSlots) : [];
+    const parsedWhyChooseUs = whyChooseUs ? JSON.parse(whyChooseUs) : {};
+
+    // Validate appointment logic
+    if (isAppointmentEnabled) {
+      if (!parsedAppointmentSlots || parsedAppointmentSlots.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'At least one appointment slot is required when appointment is enabled'
+        });
+      }
+    } else {
+      if (!basePrice || parseFloat(basePrice) <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Base price is required when appointment is disabled'
+        });
+      }
+    }
+
+    // Upload image to Cloudinary
+    const uploadResult = await uploadToCloudinary(req.file.path, 'services');
+
+    if (!uploadResult.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to upload service photo',
+        error: uploadResult.error
+      });
+    }
+
+    // Create service
+    const service = new Service({
+      providerId: provider._id,
+      servicePhoto: uploadResult.url,
+      category,
+      headline,
+      description,
+      whyChooseUs: parsedWhyChooseUs,
+      basePrice: isAppointmentEnabled ? 0 : parseFloat(basePrice),
+      appointmentEnabled: isAppointmentEnabled,
+      appointmentSlots: isAppointmentEnabled ? parsedAppointmentSlots : []
+    });
+
+    await service.save();
+
+    // Populate category and provider info
+    await service.populate('category', 'name slug icon');
+    await service.populate({
+      path: 'providerId',
+      select: 'rating totalReviews',
+      populate: {
+        path: 'userId',
+        select: 'fullName profilePicture'
+      }
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Service created successfully',
+      data: {
+        service
+      }
+    });
+
+  } catch (error) {
+    console.error('Create service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while creating service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get All Services by Provider (Provider's own services)
+ * GET /api/providers/services
+ */
+exports.getProviderServices = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, isActive } = req.query;
+
+    // Get provider
+    const provider = await Provider.findOne({ userId: req.user._id });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    const query = { providerId: provider._id };
+
+    // Filter by active status if provided
+    if (isActive !== undefined) {
+      query.isActive = isActive === 'true';
+    }
+
+    const services = await Service.find(query)
+      .populate('category', 'name slug icon')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const count = await Service.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        services,
+        totalPages: Math.ceil(count / limit),
+        currentPage: parseInt(page),
+        total: count
+      }
+    });
+
+  } catch (error) {
+    console.error('Get provider services error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching services',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Single Service by ID (Provider)
+ * GET /api/providers/services/:id
+ */
+exports.getProviderServiceById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get provider
+    const provider = await Provider.findOne({ userId: req.user._id });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    const service = await Service.findOne({ _id: id, providerId: provider._id })
+      .populate('category', 'name slug icon description');
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        service
+      }
+    });
+
+  } catch (error) {
+    console.error('Get service by ID error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Update Service (Provider only)
+ * PUT /api/providers/services/:id
+ */
+exports.updateService = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      servicePhoto,
+      category,
+      headline,
+      description,
+      whyChooseUs,
+      basePrice,
+      appointmentEnabled,
+      appointmentSlots,
+      isActive
+    } = req.body;
+
+    // Get provider
+    const provider = await Provider.findOne({ userId: req.user._id });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    const service = await Service.findOne({ _id: id, providerId: provider._id });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service not found'
+      });
+    }
+
+    // Verify category if being updated
+    if (category && category !== service.category.toString()) {
+      const categoryExists = await Category.findById(category);
+      if (!categoryExists) {
+        return res.status(404).json({
+          success: false,
+          message: 'Category not found'
+        });
+      }
+    }
+
+    // Update fields
+    if (servicePhoto !== undefined) service.servicePhoto = servicePhoto;
+    if (category !== undefined) service.category = category;
+    if (headline !== undefined) service.headline = headline;
+    if (description !== undefined) service.description = description;
+    if (whyChooseUs !== undefined) service.whyChooseUs = whyChooseUs;
+    if (isActive !== undefined) service.isActive = isActive;
+
+    // Handle appointment toggle
+    if (appointmentEnabled !== undefined) {
+      service.appointmentEnabled = appointmentEnabled;
+
+      if (appointmentEnabled) {
+        // Appointment is ON - require slots
+        if (!appointmentSlots || appointmentSlots.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'At least one appointment slot is required when appointment is enabled'
+          });
+        }
+        service.appointmentSlots = appointmentSlots;
+        service.basePrice = 0;
+      } else {
+        // Appointment is OFF - require base price
+        if (!basePrice || basePrice <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Base price is required when appointment is disabled'
+          });
+        }
+        service.basePrice = basePrice;
+        service.appointmentSlots = [];
+      }
+    } else {
+      // If appointment toggle not changed, update respective fields
+      if (service.appointmentEnabled && appointmentSlots !== undefined) {
+        service.appointmentSlots = appointmentSlots;
+      }
+      if (!service.appointmentEnabled && basePrice !== undefined) {
+        service.basePrice = basePrice;
+      }
+    }
+
+    await service.save();
+
+    // Populate for response
+    await service.populate('category', 'name slug icon');
+
+    res.status(200).json({
+      success: true,
+      message: 'Service updated successfully',
+      data: {
+        service
+      }
+    });
+
+  } catch (error) {
+    console.error('Update service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Delete Service (Provider only)
+ * DELETE /api/providers/services/:id
+ */
+exports.deleteService = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get provider
+    const provider = await Provider.findOne({ userId: req.user._id });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    const service = await Service.findOne({ _id: id, providerId: provider._id });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service not found'
+      });
+    }
+
+    await service.deleteOne();
+
+    res.status(200).json({
+      success: true,
+      message: 'Service deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while deleting service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Toggle Service Active Status (Provider only)
+ * PUT /api/providers/services/:id/toggle-status
+ */
+exports.toggleServiceStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get provider
+    const provider = await Provider.findOne({ userId: req.user._id });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    const service = await Service.findOne({ _id: id, providerId: provider._id });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service not found'
+      });
+    }
+
+    service.isActive = !service.isActive;
+    await service.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Service ${service.isActive ? 'activated' : 'deactivated'} successfully`,
+      data: {
+        service
+      }
+    });
+
+  } catch (error) {
+    console.error('Toggle service status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while toggling service status',
+      error: error.message
+    });
+  }
+};
+
+// ============ PUBLIC ENDPOINTS (For Users) ============
+
+/**
+ * Get All Services (Public)
+ * GET /api/services
+ */
+exports.getAllServices = async (req, res) => {
+  try {
+    const {
+      category,
+      minPrice,
+      maxPrice,
+      sortBy = 'createdAt',
+      order = 'desc',
+      page = 1,
+      limit = 12,
+      search
+    } = req.query;
+
+    const query = { isActive: true };
+
+    // Filter by category
+    if (category) {
+      query.category = category;
+    }
+
+    // Search in headline and description
+    if (search) {
+      query.$or = [
+        { headline: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Price filter (check both basePrice and appointment slots)
+    if (minPrice || maxPrice) {
+      const priceQuery = [];
+
+      if (minPrice) {
+        priceQuery.push({ basePrice: { $gte: parseFloat(minPrice) } });
+      }
+      if (maxPrice) {
+        priceQuery.push({ basePrice: { $lte: parseFloat(maxPrice) } });
+      }
+
+      if (priceQuery.length > 0) {
+        query.$and = priceQuery;
+      }
+    }
+
+    // Sorting
+    const sortOptions = {};
+    sortOptions[sortBy] = order === 'asc' ? 1 : -1;
+
+    const services = await Service.find(query)
+      .populate('category', 'name slug icon')
+      .populate({
+        path: 'providerId',
+        select: 'rating totalReviews',
+        populate: {
+          path: 'userId',
+          select: 'fullName profilePicture'
+        }
+      })
+      .sort(sortOptions)
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const count = await Service.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        services,
+        totalPages: Math.ceil(count / limit),
+        currentPage: parseInt(page),
+        total: count
+      }
+    });
+
+  } catch (error) {
+    console.error('Get all services error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching services',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Single Service by ID (Public)
+ * GET /api/services/:id
+ */
+exports.getServiceById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const service = await Service.findOne({ _id: id, isActive: true })
+      .populate('category', 'name slug icon description')
+      .populate({
+        path: 'providerId',
+        select: 'rating totalReviews completedJobs',
+        populate: {
+          path: 'userId',
+          select: 'fullName email phoneNumber profilePicture'
+        }
+      });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service not found'
+      });
+    }
+
+    // Increment views
+    await service.incrementViews();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        service
+      }
+    });
+
+  } catch (error) {
+    console.error('Get service by ID error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Services by Category (Public)
+ * GET /api/services/category/:categoryId
+ */
+exports.getServicesByCategory = async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { page = 1, limit = 12, sortBy = 'createdAt', order = 'desc' } = req.query;
+
+    // Verify category exists
+    const category = await Category.findById(categoryId);
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    const query = { category: categoryId, isActive: true };
+
+    const sortOptions = {};
+    sortOptions[sortBy] = order === 'asc' ? 1 : -1;
+
+    const services = await Service.find(query)
+      .populate('category', 'name slug icon')
+      .populate({
+        path: 'providerId',
+        select: 'rating totalReviews',
+        populate: {
+          path: 'userId',
+          select: 'fullName profilePicture'
+        }
+      })
+      .sort(sortOptions)
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const count = await Service.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        category: {
+          id: category._id,
+          name: category.name,
+          slug: category.slug,
+          description: category.description
+        },
+        services,
+        totalPages: Math.ceil(count / limit),
+        currentPage: parseInt(page),
+        total: count
+      }
+    });
+
+  } catch (error) {
+    console.error('Get services by category error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching services',
+      error: error.message
+    });
+  }
+};

@@ -58,6 +58,9 @@ const uploadIdCards = upload.fields([
 // Middleware for single profile picture upload
 const uploadProfilePicture = upload.single('profilePicture');
 
+// Middleware for single service photo upload
+const uploadServicePhoto = upload.single('servicePhoto');
+
 // Error handler middleware for multer
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
@@ -91,5 +94,6 @@ const handleUploadError = (err, req, res, next) => {
 module.exports = {
   uploadIdCards,
   uploadProfilePicture,
+  uploadServicePhoto,
   handleUploadError
 };

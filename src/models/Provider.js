@@ -24,7 +24,6 @@ const providerSchema = new mongoose.Schema({
     idNumber: {
       type: String, // To be filled manually by admin after review
       required: false,
-      sparse: true, // Allow null but unique when present
       trim: true
     },
     fullNameOnId: {
@@ -76,6 +75,11 @@ const providerSchema = new mongoose.Schema({
     sparse: true // Allow null but unique when present
   },
   // Provider-specific fields
+  // Categories this provider belongs to
+  categories: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category'
+  }],
   servicesOffered: [{
     type: String,
     trim: true
@@ -104,8 +108,9 @@ const providerSchema = new mongoose.Schema({
 
 // Index for faster queries
 providerSchema.index({ userId: 1 });
-providerSchema.index({ 'idCard.idNumber': 1 });
+// Note: idCard.idNumber already has a sparse unique index defined in the schema field (line 27)
 providerSchema.index({ verificationStatus: 1 });
+providerSchema.index({ categories: 1 });
 
 // Virtual populate to get user details
 providerSchema.virtual('user', {

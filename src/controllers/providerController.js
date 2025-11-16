@@ -76,72 +76,89 @@ exports.registerProvider = async (req, res) => {
       });
     }
 
-    // Create User account
-    const user = new User({
-      fullName,
-      email: email.toLowerCase(),
-      phoneNumber,
-      password,
-      userType: 'provider',
-      authProvider: 'local',
-      termsAccepted: true
-    });
+    // Start a database transaction to ensure atomic operations
+    const session = await User.startSession();
+    session.startTransaction();
 
-    await user.save();
+    try {
+      // Create User account
+      const user = new User({
+        fullName,
+        email: email.toLowerCase(),
+        phoneNumber,
+        password,
+        userType: 'provider',
+        authProvider: 'local',
+        termsAccepted: true
+      });
 
-    // Create Provider profile
-    const provider = new Provider({
-      userId: user._id,
-      idCard: {
-        frontImage: req.files?.idCardFront ? req.files.idCardFront[0].filename : null,
-        backImage: req.files?.idCardBack ? req.files.idCardBack[0].filename : null,
-        idNumber: null, // No OCR extraction - to be filled manually by admin
-        fullNameOnId: fullName, // Use provided full name
-        dateOfBirth: null, // To be filled manually by admin
-        expiryDate: null,
-        issuedDate: null,
-        nationality: null,
-        address: null
-      },
-      occupation: occupation || null,
-      referenceId: referenceId || null,
-      verificationStatus: 'pending' // Requires admin approval
-    });
+      await user.save({ session });
 
-    await provider.save();
-
-    // Generate JWT token
-    const token = generateToken({
-      id: user._id,
-      userType: user.userType
-    });
-
-    // Return success response
-    res.status(201).json({
-      success: true,
-      message: 'Provider registration successful. Your account is pending verification.',
-      data: {
-        user: {
-          id: user._id,
-          fullName: user.fullName,
-          email: user.email,
-          phoneNumber: user.phoneNumber,
-          userType: user.userType,
-          authProvider: user.authProvider
+      // Create Provider profile
+      const provider = new Provider({
+        userId: user._id,
+        idCard: {
+          frontImage: req.files?.idCardFront ? req.files.idCardFront[0].filename : null,
+          backImage: req.files?.idCardBack ? req.files.idCardBack[0].filename : null,
+          idNumber: null, // No OCR extraction - to be filled manually by admin
+          fullNameOnId: fullName, // Use provided full name
+          dateOfBirth: null, // To be filled manually by admin
+          expiryDate: null,
+          issuedDate: null,
+          nationality: null,
+          address: null
         },
-        provider: {
-          id: provider._id,
-          verificationStatus: provider.verificationStatus,
-          occupation: provider.occupation,
-          referenceId: provider.referenceId,
-          idCardUploaded: {
-            front: !!idCardFrontPath,
-            back: !!idCardBackPath
-          }
-        },
-        token
-      }
-    });
+        occupation: occupation || null,
+        referenceId: referenceId || null,
+        verificationStatus: 'pending' // Requires admin approval
+      });
+
+      await provider.save({ session });
+
+      // Commit the transaction
+      await session.commitTransaction();
+
+      // Generate JWT token
+      const token = generateToken({
+        id: user._id,
+        userType: user.userType
+      });
+
+      // Return success response
+      res.status(201).json({
+        success: true,
+        message: 'Provider registration successful. Your account is pending verification.',
+        data: {
+          user: {
+            id: user._id,
+            fullName: user.fullName,
+            email: user.email,
+            phoneNumber: user.phoneNumber,
+            userType: user.userType,
+            authProvider: user.authProvider
+          },
+          provider: {
+            id: provider._id,
+            verificationStatus: provider.verificationStatus,
+            occupation: provider.occupation,
+            referenceId: provider.referenceId,
+            idCardUploaded: {
+              front: !!idCardFrontPath,
+              back: !!idCardBackPath
+            }
+          },
+          token
+        }
+      });
+
+    } catch (transactionError) {
+      // Rollback the transaction on error
+      await session.abortTransaction();
+      throw transactionError; // Re-throw to be caught by outer catch block
+    } finally {
+      // End the session
+      session.endSession();
+    }
 
   } catch (error) {
     console.error('Provider registration error:', error);

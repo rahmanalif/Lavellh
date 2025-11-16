@@ -4,7 +4,8 @@
       "Bash(dir /B:*)",
       "Bash(npm start)",
       "Bash(npm install:*)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(node fix-duplicate-index.js:*)"
     ],
     "deny": [],
     "ask": []
