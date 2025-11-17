@@ -14,10 +14,24 @@ if (!fs.existsSync(idCardsDir)) {
   fs.mkdirSync(idCardsDir, { recursive: true });
 }
 
-// Configure storage
-const storage = multer.diskStorage({
+// Configure storage for ID cards
+const idCardStorage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, idCardsDir);
+  },
+  filename: function (req, file, cb) {
+    // Generate unique filename: timestamp-randomstring-originalname
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    const nameWithoutExt = path.basename(file.originalname, ext);
+    cb(null, `${nameWithoutExt}-${uniqueSuffix}${ext}`);
+  }
+});
+
+// Configure storage for profile pictures and service photos
+const generalStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
   },
   filename: function (req, file, cb) {
     // Generate unique filename: timestamp-randomstring-originalname
@@ -40,9 +54,18 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Configure multer
-const upload = multer({
-  storage: storage,
+// Configure multer for ID cards
+const idCardUpload = multer({
+  storage: idCardStorage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB max file size
+  }
+});
+
+// Configure multer for general uploads (profile pictures, service photos)
+const generalUpload = multer({
+  storage: generalStorage,
   fileFilter: fileFilter,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB max file size
@@ -50,16 +73,16 @@ const upload = multer({
 });
 
 // Middleware for ID card uploads (front required, back optional)
-const uploadIdCards = upload.fields([
+const uploadIdCards = idCardUpload.fields([
   { name: 'idCardFront', maxCount: 1 },    // Required
   { name: 'idCardBack', maxCount: 1 }      // Optional - for records only
 ]);
 
 // Middleware for single profile picture upload
-const uploadProfilePicture = upload.single('profilePicture');
+const uploadProfilePicture = generalUpload.single('profilePicture');
 
 // Middleware for single service photo upload
-const uploadServicePhoto = upload.single('servicePhoto');
+const uploadServicePhoto = generalUpload.single('servicePhoto');
 
 // Error handler middleware for multer
 const handleUploadError = (err, req, res, next) => {

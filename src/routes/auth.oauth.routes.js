@@ -31,8 +31,7 @@ const sendTokenResponse = (res, user) => {
       email: user.email,
       profilePicture: user.profilePicture,
       userType: user.userType,
-      authProvider: user.authProvider,
-      isEmailVerified: user.isEmailVerified
+      authProvider: user.authProvider
     }
   });
 };
@@ -176,8 +175,6 @@ router.get('/me', protect, (req, res) => {
       profilePicture: req.user.profilePicture,
       userType: req.user.userType,
       authProvider: req.user.authProvider,
-      isEmailVerified: req.user.isEmailVerified,
-      isPhoneVerified: req.user.isPhoneVerified,
       createdAt: req.user.createdAt
     }
   });

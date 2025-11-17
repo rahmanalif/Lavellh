@@ -1,4 +1,8 @@
-require('dotenv').config();
+require('dotenv').config({ path: '.env' });
+console.log('✅ Environment variables loaded');
+console.log('📍 GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? 'Found' : 'Not found');
+console.log('📍 CLOUDINARY_CLOUD_NAME:', process.env.CLOUDINARY_CLOUD_NAME ? 'Found' : 'Not found');
+
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');

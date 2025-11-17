@@ -1,5 +1,7 @@
 const User = require('../models/User');
 const { generateToken } = require('../utility/jwt'); // Changed from '../utils/jwt'
+const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
+const fs = require('fs').promises;
 
 
 // Register user
@@ -77,9 +79,7 @@ const register = async (req, res) => {
           fullName: user.fullName,
           email: user.email,
           phoneNumber: user.phoneNumber,
-          userType: user.userType,
-          isEmailVerified: user.isEmailVerified,
-          isPhoneVerified: user.isPhoneVerified
+          userType: user.userType
         },
         token
       }
@@ -173,9 +173,7 @@ const login = async (req, res) => {
           fullName: user.fullName,
           email: user.email,
           phoneNumber: user.phoneNumber,
-          userType: user.userType,
-          isEmailVerified: user.isEmailVerified,
-          isPhoneVerified: user.isPhoneVerified
+          userType: user.userType
         },
         token
       }
@@ -200,9 +198,8 @@ const getMe = async (req, res) => {
           fullName: req.user.fullName,
           email: req.user.email,
           phoneNumber: req.user.phoneNumber,
+          profilePicture: req.user.profilePicture,
           userType: req.user.userType,
-          isEmailVerified: req.user.isEmailVerified,
-          isPhoneVerified: req.user.isPhoneVerified,
           isActive: req.user.isActive,
           createdAt: req.user.createdAt
         }
@@ -217,8 +214,206 @@ const getMe = async (req, res) => {
   }
 };
 
+// Update user profile
+const updateProfile = async (req, res) => {
+  try {
+    const { fullName, email, phoneNumber } = req.body;
+    const userId = req.user._id;
+
+    // Find user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if email is being changed and already exists
+    if (email && email !== user.email) {
+      const emailExists = await User.findOne({
+        email,
+        _id: { $ne: userId }
+      });
+
+      if (emailExists) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email already in use by another account'
+        });
+      }
+    }
+
+    // Check if phone number is being changed and already exists
+    if (phoneNumber && phoneNumber !== user.phoneNumber) {
+      const phoneExists = await User.findOne({
+        phoneNumber,
+        _id: { $ne: userId }
+      });
+
+      if (phoneExists) {
+        return res.status(400).json({
+          success: false,
+          message: 'Phone number already in use by another account'
+        });
+      }
+    }
+
+    // Update fields only if provided
+    if (fullName) user.fullName = fullName;
+    if (email) user.email = email;
+    if (phoneNumber) user.phoneNumber = phoneNumber;
+
+    // Handle profile picture upload
+    if (req.file) {
+      try {
+        // Upload new profile picture to Cloudinary
+        const uploadResult = await uploadToCloudinary(req.file.path, 'profiles');
+
+        if (uploadResult.success) {
+          // Delete old profile picture from Cloudinary if exists
+          if (user.profilePicture) {
+            // Extract public ID from URL
+            const urlParts = user.profilePicture.split('/');
+            const publicIdWithExtension = urlParts.slice(-2).join('/');
+            const publicId = publicIdWithExtension.split('.')[0];
+            await deleteFromCloudinary(publicId);
+          }
+
+          user.profilePicture = uploadResult.url;
+        }
+
+        // Delete local file after upload
+        await fs.unlink(req.file.path);
+      } catch (uploadError) {
+        console.error('Profile picture upload error:', uploadError);
+        // Continue even if upload fails - don't block profile update
+      }
+    }
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: {
+        user: {
+          id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          profilePicture: user.profilePicture,
+          userType: user.userType
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Profile update error:', error);
+
+    // Clean up uploaded file if exists
+    if (req.file) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (unlinkError) {
+        console.error('Error deleting uploaded file:', unlinkError);
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Error updating profile',
+      error: error.message
+    });
+  }
+};
+
+// Change password
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    const userId = req.user._id;
+
+    // Validate required fields
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'All password fields are required'
+      });
+    }
+
+    // Validate new password and confirm password match
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password and confirm password do not match'
+      });
+    }
+
+    // Validate new password strength (minimum 6 characters)
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be at least 6 characters long'
+      });
+    }
+
+    // Find user with password field
+    const user = await User.findById(userId).select('+password');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if user has a password (OAuth users might not have password)
+    if (!user.password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot change password for OAuth-authenticated accounts'
+      });
+    }
+
+    // Verify current password
+    const isPasswordValid = await user.comparePassword(currentPassword);
+    if (!isPasswordValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
+    }
+
+    // Check if new password is same as current password
+    const isSamePassword = await user.comparePassword(newPassword);
+    if (isSamePassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be different from current password'
+      });
+    }
+
+    // Update password (will be hashed by pre-save hook in User model)
+    user.password = newPassword;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    console.error('Password change error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error changing password',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
-  getMe
+  getMe,
+  updateProfile,
+  changePassword
 };

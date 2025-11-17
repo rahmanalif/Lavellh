@@ -19,15 +19,16 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-// Google OAuth Strategy
-passport.use(
-  new GoogleStrategy(
-    {
-      clientID: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: process.env.GOOGLE_CALLBACK_URL || '/api/auth/google/callback',
-      scope: ['profile', 'email']
-    },
+// Google OAuth Strategy - Only initialize if credentials are provided
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  passport.use(
+    new GoogleStrategy(
+      {
+        clientID: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        callbackURL: process.env.GOOGLE_CALLBACK_URL || '/api/auth/google/callback',
+        scope: ['profile', 'email']
+      },
     async (accessToken, refreshToken, profile, done) => {
       try {
         // Check if user already exists with this Google ID
@@ -61,7 +62,6 @@ passport.use(
           authProvider: 'google',
           providerId: profile.id,
           profilePicture: profile.photos && profile.photos[0] ? profile.photos[0].value : null,
-          isEmailVerified: true, // Google emails are verified
           termsAccepted: true
         });
 
@@ -72,16 +72,20 @@ passport.use(
     }
   )
 );
+} else {
+  console.log('⚠️ Google OAuth not configured - skipping strategy initialization');
+}
 
-// Facebook OAuth Strategy
-passport.use(
-  new FacebookStrategy(
-    {
-      clientID: process.env.FACEBOOK_APP_ID,
-      clientSecret: process.env.FACEBOOK_APP_SECRET,
-      callbackURL: process.env.FACEBOOK_CALLBACK_URL || '/api/auth/facebook/callback',
-      profileFields: ['id', 'displayName', 'email', 'picture.type(large)']
-    },
+// Facebook OAuth Strategy - Only initialize if credentials are provided
+if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
+  passport.use(
+    new FacebookStrategy(
+      {
+        clientID: process.env.FACEBOOK_APP_ID,
+        clientSecret: process.env.FACEBOOK_APP_SECRET,
+        callbackURL: process.env.FACEBOOK_CALLBACK_URL || '/api/auth/facebook/callback',
+        profileFields: ['id', 'displayName', 'email', 'picture.type(large)']
+      },
     async (accessToken, refreshToken, profile, done) => {
       try {
         // Check if user already exists with this Facebook ID
@@ -116,7 +120,6 @@ passport.use(
           authProvider: 'facebook',
           providerId: profile.id,
           profilePicture: profile.photos && profile.photos[0] ? profile.photos[0].value : null,
-          isEmailVerified: profile.emails && profile.emails[0] ? true : false,
           termsAccepted: true
         });
 
@@ -127,18 +130,22 @@ passport.use(
     }
   )
 );
+} else {
+  console.log('⚠️ Facebook OAuth not configured - skipping strategy initialization');
+}
 
-// Apple OAuth Strategy
-passport.use(
-  new AppleStrategy(
-    {
-      clientID: process.env.APPLE_SERVICE_ID,
-      teamID: process.env.APPLE_TEAM_ID,
-      callbackURL: process.env.APPLE_CALLBACK_URL || '/api/auth/apple/callback',
-      keyID: process.env.APPLE_KEY_ID,
-      privateKeyString: process.env.APPLE_PRIVATE_KEY,
-      scope: ['name', 'email']
-    },
+// Apple OAuth Strategy - Only initialize if credentials are provided
+if (process.env.APPLE_SERVICE_ID && process.env.APPLE_TEAM_ID && process.env.APPLE_KEY_ID && process.env.APPLE_PRIVATE_KEY) {
+  passport.use(
+    new AppleStrategy(
+      {
+        clientID: process.env.APPLE_SERVICE_ID,
+        teamID: process.env.APPLE_TEAM_ID,
+        callbackURL: process.env.APPLE_CALLBACK_URL || '/api/auth/apple/callback',
+        keyID: process.env.APPLE_KEY_ID,
+        privateKeyString: process.env.APPLE_PRIVATE_KEY,
+        scope: ['name', 'email']
+      },
     async (accessToken, refreshToken, idToken, profile, done) => {
       try {
         // Check if user already exists with this Apple ID
@@ -177,7 +184,6 @@ passport.use(
           email: profile.email || null,
           authProvider: 'apple',
           providerId: profile.id,
-          isEmailVerified: profile.email ? true : false,
           termsAccepted: true
         });
 
@@ -188,5 +194,8 @@ passport.use(
     }
   )
 );
+} else {
+  console.log('⚠️ Apple OAuth not configured - skipping strategy initialization');
+}
 
 module.exports = passport;

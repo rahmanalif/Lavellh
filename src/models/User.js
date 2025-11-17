@@ -79,14 +79,6 @@ const userSchema = new mongoose.Schema({
     enum: ['user', 'provider'],
     immutable: true // Cannot be changed after creation
   },
-  isEmailVerified: {
-    type: Boolean,
-    default: true
-  },
-  isPhoneVerified: {
-    type: Boolean,
-    default: true
-  },
   isActive: {
     type: Boolean,
     default: true

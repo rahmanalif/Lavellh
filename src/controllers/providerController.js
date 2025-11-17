@@ -267,8 +267,6 @@ exports.loginProvider = async (req, res) => {
           email: user.email,
           phoneNumber: user.phoneNumber,
           userType: user.userType,
-          isEmailVerified: user.isEmailVerified,
-          isPhoneVerified: user.isPhoneVerified,
           profilePicture: user.profilePicture
         },
         provider: {
