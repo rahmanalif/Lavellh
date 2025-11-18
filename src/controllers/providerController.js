@@ -3,6 +3,7 @@ const Provider = require('../models/Provider');
 const ocrService = require('../utility/ocrService');
 const { generateToken } = require('../utility/jwt');
 const fs = require('fs').promises;
+const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 
 /**
  * Register a new provider
@@ -333,13 +334,26 @@ exports.getProviderProfile = async (req, res) => {
 exports.updateProviderProfile = async (req, res) => {
   try {
     const {
+      fullName,
+      email,
+      phoneNumber,
       occupation,
       servicesOffered,
       isAvailable
     } = req.body;
 
-    const provider = await Provider.findOne({ userId: req.user._id });
+    const userId = req.user._id;
 
+    // Find user and provider
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const provider = await Provider.findOne({ userId: userId });
     if (!provider) {
       return res.status(404).json({
         success: false,
@@ -347,26 +361,207 @@ exports.updateProviderProfile = async (req, res) => {
       });
     }
 
-    // Update allowed fields
+    // Check if email is being changed and already exists
+    if (email && email !== user.email) {
+      const emailExists = await User.findOne({
+        email: email.toLowerCase(),
+        _id: { $ne: userId }
+      });
+
+      if (emailExists) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email already in use by another account'
+        });
+      }
+    }
+
+    // Check if phone number is being changed and already exists
+    if (phoneNumber && phoneNumber !== user.phoneNumber) {
+      const phoneExists = await User.findOne({
+        phoneNumber,
+        _id: { $ne: userId }
+      });
+
+      if (phoneExists) {
+        return res.status(400).json({
+          success: false,
+          message: 'Phone number already in use by another account'
+        });
+      }
+    }
+
+    // Update user fields
+    if (fullName) user.fullName = fullName;
+    if (email) user.email = email.toLowerCase();
+    if (phoneNumber) user.phoneNumber = phoneNumber;
+
+    // Handle profile picture upload
+    if (req.file) {
+      try {
+        // Upload new profile picture to Cloudinary
+        const uploadResult = await uploadToCloudinary(req.file.path, 'profiles');
+
+        if (uploadResult.success) {
+          // Delete old profile picture from Cloudinary if exists
+          if (user.profilePicture) {
+            // Extract public ID from URL
+            const urlParts = user.profilePicture.split('/');
+            const publicIdWithExtension = urlParts.slice(-2).join('/');
+            const publicId = publicIdWithExtension.split('.')[0];
+            await deleteFromCloudinary(publicId);
+          }
+
+          user.profilePicture = uploadResult.url;
+        }
+
+        // Delete local file after upload
+        await fs.unlink(req.file.path);
+      } catch (uploadError) {
+        console.error('Profile picture upload error:', uploadError);
+        // Continue even if upload fails - don't block profile update
+      }
+    }
+
+    await user.save();
+
+    // Update provider-specific fields
     if (occupation !== undefined) provider.occupation = occupation;
     if (servicesOffered !== undefined) provider.servicesOffered = servicesOffered;
     if (isAvailable !== undefined) provider.isAvailable = isAvailable;
 
     await provider.save();
 
+    // Fetch updated provider with populated user data
+    const updatedProvider = await Provider.findOne({ userId: userId })
+      .populate('userId', '-password -resetPasswordOTP -resetPasswordOTPExpires');
+
     res.status(200).json({
       success: true,
       message: 'Provider profile updated successfully',
       data: {
-        provider
+        user: {
+          id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          profilePicture: user.profilePicture,
+          userType: user.userType
+        },
+        provider: {
+          id: provider._id,
+          occupation: provider.occupation,
+          servicesOffered: provider.servicesOffered,
+          isAvailable: provider.isAvailable,
+          verificationStatus: provider.verificationStatus,
+          rating: provider.rating,
+          totalReviews: provider.totalReviews,
+          completedJobs: provider.completedJobs
+        }
       }
     });
 
   } catch (error) {
     console.error('Update provider profile error:', error);
+
+    // Clean up uploaded file if exists
+    if (req.file) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (unlinkError) {
+        console.error('Error deleting uploaded file:', unlinkError);
+      }
+    }
+
     res.status(500).json({
       success: false,
       message: 'An error occurred while updating provider profile',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Change provider password
+ * POST /api/providers/change-password
+ */
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    const userId = req.user._id;
+
+    // Validate required fields
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'All password fields are required'
+      });
+    }
+
+    // Validate new password and confirm password match
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password and confirm password do not match'
+      });
+    }
+
+    // Validate new password strength
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be at least 6 characters long'
+      });
+    }
+
+    // Find user with password field
+    const user = await User.findById(userId).select('+password');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if user has a password (OAuth users might not)
+    if (!user.password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot change password for OAuth-authenticated accounts'
+      });
+    }
+
+    // Verify current password
+    const isPasswordValid = await user.comparePassword(currentPassword);
+    if (!isPasswordValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
+    }
+
+    // Check if new password is same as current
+    const isSamePassword = await user.comparePassword(newPassword);
+    if (isSamePassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be different from current password'
+      });
+    }
+
+    // Update password
+    user.password = newPassword;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    console.error('Password change error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error changing password',
       error: error.message
     });
   }

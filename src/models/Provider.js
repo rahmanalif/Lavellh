@@ -52,8 +52,8 @@ const providerSchema = new mongoose.Schema({
   // Verification Status
   verificationStatus: {
     type: String,
-    enum: ['pending', 'approved', 'rejected'],
-    default: 'pending'
+    enum: ['pending', 'approved', 'rejected', 'verified'],
+    default: 'verified'
   },
   idVerifiedAt: {
     type: Date

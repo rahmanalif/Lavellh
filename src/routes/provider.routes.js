@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const providerController = require('../controllers/providerController');
-const { uploadIdCards, handleUploadError } = require('../middleware/upload');
+const { uploadIdCards, uploadProfilePicture, handleUploadError } = require('../middleware/upload');
 const auth = require('../middleware/auth');
 
 /**
@@ -35,6 +35,13 @@ router.get('/me', auth, providerController.getProviderProfile);
  * @desc    Update current provider profile
  * @access  Private (Provider only)
  */
-router.put('/me', auth, providerController.updateProviderProfile);
+router.put('/me', auth, uploadProfilePicture, handleUploadError, providerController.updateProviderProfile);
+
+/**
+ * @route   POST /api/providers/change-password
+ * @desc    Change provider password
+ * @access  Private (Provider only)
+ */
+router.post('/change-password', auth, providerController.changePassword);
 
 module.exports = router;
