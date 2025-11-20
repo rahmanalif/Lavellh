@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const passport = require('../config/passport');
 const jwt = require('jsonwebtoken');
+const Provider = require('../models/Provider');
+const BusinessOwner = require('../models/BusinessOwner');
 
 // Helper function to generate JWT token
 const generateToken = (user) => {
@@ -17,7 +19,7 @@ const generateToken = (user) => {
   );
 };
 
-// Helper function to send response with token
+// Helper function to send response with token (standard user)
 const sendTokenResponse = (res, user) => {
   const token = generateToken(user);
 
@@ -34,6 +36,74 @@ const sendTokenResponse = (res, user) => {
       authProvider: user.authProvider
     }
   });
+};
+
+// Helper function to send response with token for Provider
+const sendProviderTokenResponse = async (res, user) => {
+  try {
+    const provider = await Provider.findOne({ userId: user._id });
+    const token = generateToken(user);
+
+    res.json({
+      success: true,
+      message: 'Provider authentication successful',
+      token,
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        profilePicture: user.profilePicture,
+        userType: user.userType,
+        authProvider: user.authProvider
+      },
+      provider: {
+        id: provider._id,
+        verificationStatus: provider.verificationStatus,
+        categories: provider.categories,
+        rating: provider.rating,
+        isAvailable: provider.isAvailable
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching provider profile',
+      error: error.message
+    });
+  }
+};
+
+// Helper function to send response with token for BusinessOwner
+const sendBusinessOwnerTokenResponse = async (res, user) => {
+  try {
+    const businessOwner = await BusinessOwner.findOne({ userId: user._id });
+    const token = generateToken(user);
+
+    res.json({
+      success: true,
+      message: 'Business Owner authentication successful',
+      token,
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        profilePicture: user.profilePicture,
+        userType: user.userType,
+        authProvider: user.authProvider
+      },
+      businessOwner: {
+        id: businessOwner._id,
+        occupation: businessOwner.occupation,
+        referenceId: businessOwner.referenceId
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching business owner profile',
+      error: error.message
+    });
+  }
 };
 
 // ============================================
@@ -179,5 +249,193 @@ router.get('/me', protect, (req, res) => {
     }
   });
 });
+
+// ============================================
+// PROVIDER OAUTH ROUTES
+// ============================================
+
+// @route   GET /api/auth/google/provider
+// @desc    Initiate Google OAuth for Provider
+// @access  Public
+router.get('/google/provider',
+  passport.authenticate('google-provider', {
+    session: false,
+    scope: ['profile', 'email']
+  })
+);
+
+// @route   GET /api/auth/google/provider/callback
+// @desc    Google OAuth callback for Provider
+// @access  Public
+router.get('/google/provider/callback',
+  passport.authenticate('google-provider', {
+    session: false,
+    failureRedirect: '/login?error=google_provider_auth_failed'
+  }),
+  async (req, res) => {
+    if (req.user) {
+      await sendProviderTokenResponse(res, req.user);
+    } else {
+      res.status(401).json({
+        success: false,
+        message: 'Google Provider authentication failed'
+      });
+    }
+  }
+);
+
+// @route   GET /api/auth/facebook/provider
+// @desc    Initiate Facebook OAuth for Provider
+// @access  Public
+router.get('/facebook/provider',
+  passport.authenticate('facebook-provider', {
+    session: false,
+    scope: ['email', 'public_profile']
+  })
+);
+
+// @route   GET /api/auth/facebook/provider/callback
+// @desc    Facebook OAuth callback for Provider
+// @access  Public
+router.get('/facebook/provider/callback',
+  passport.authenticate('facebook-provider', {
+    session: false,
+    failureRedirect: '/login?error=facebook_provider_auth_failed'
+  }),
+  async (req, res) => {
+    if (req.user) {
+      await sendProviderTokenResponse(res, req.user);
+    } else {
+      res.status(401).json({
+        success: false,
+        message: 'Facebook Provider authentication failed'
+      });
+    }
+  }
+);
+
+// @route   POST /api/auth/apple/provider
+// @desc    Initiate Apple OAuth for Provider
+// @access  Public
+router.post('/apple/provider',
+  passport.authenticate('apple-provider', {
+    session: false,
+    scope: ['name', 'email']
+  })
+);
+
+// @route   POST /api/auth/apple/provider/callback
+// @desc    Apple OAuth callback for Provider
+// @access  Public
+router.post('/apple/provider/callback',
+  passport.authenticate('apple-provider', {
+    session: false,
+    failureRedirect: '/login?error=apple_provider_auth_failed'
+  }),
+  async (req, res) => {
+    if (req.user) {
+      await sendProviderTokenResponse(res, req.user);
+    } else {
+      res.status(401).json({
+        success: false,
+        message: 'Apple Provider authentication failed'
+      });
+    }
+  }
+);
+
+// ============================================
+// BUSINESS OWNER OAUTH ROUTES
+// ============================================
+
+// @route   GET /api/auth/google/business-owner
+// @desc    Initiate Google OAuth for Business Owner
+// @access  Public
+router.get('/google/business-owner',
+  passport.authenticate('google-business-owner', {
+    session: false,
+    scope: ['profile', 'email']
+  })
+);
+
+// @route   GET /api/auth/google/business-owner/callback
+// @desc    Google OAuth callback for Business Owner
+// @access  Public
+router.get('/google/business-owner/callback',
+  passport.authenticate('google-business-owner', {
+    session: false,
+    failureRedirect: '/login?error=google_business_owner_auth_failed'
+  }),
+  async (req, res) => {
+    if (req.user) {
+      await sendBusinessOwnerTokenResponse(res, req.user);
+    } else {
+      res.status(401).json({
+        success: false,
+        message: 'Google Business Owner authentication failed'
+      });
+    }
+  }
+);
+
+// @route   GET /api/auth/facebook/business-owner
+// @desc    Initiate Facebook OAuth for Business Owner
+// @access  Public
+router.get('/facebook/business-owner',
+  passport.authenticate('facebook-business-owner', {
+    session: false,
+    scope: ['email', 'public_profile']
+  })
+);
+
+// @route   GET /api/auth/facebook/business-owner/callback
+// @desc    Facebook OAuth callback for Business Owner
+// @access  Public
+router.get('/facebook/business-owner/callback',
+  passport.authenticate('facebook-business-owner', {
+    session: false,
+    failureRedirect: '/login?error=facebook_business_owner_auth_failed'
+  }),
+  async (req, res) => {
+    if (req.user) {
+      await sendBusinessOwnerTokenResponse(res, req.user);
+    } else {
+      res.status(401).json({
+        success: false,
+        message: 'Facebook Business Owner authentication failed'
+      });
+    }
+  }
+);
+
+// @route   POST /api/auth/apple/business-owner
+// @desc    Initiate Apple OAuth for Business Owner
+// @access  Public
+router.post('/apple/business-owner',
+  passport.authenticate('apple-business-owner', {
+    session: false,
+    scope: ['name', 'email']
+  })
+);
+
+// @route   POST /api/auth/apple/business-owner/callback
+// @desc    Apple OAuth callback for Business Owner
+// @access  Public
+router.post('/apple/business-owner/callback',
+  passport.authenticate('apple-business-owner', {
+    session: false,
+    failureRedirect: '/login?error=apple_business_owner_auth_failed'
+  }),
+  async (req, res) => {
+    if (req.user) {
+      await sendBusinessOwnerTokenResponse(res, req.user);
+    } else {
+      res.status(401).json({
+        success: false,
+        message: 'Apple Business Owner authentication failed'
+      });
+    }
+  }
+);
 
 module.exports = router;

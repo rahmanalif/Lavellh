@@ -14,6 +14,7 @@ const appointmentRoutes = require('./appointment.routes');
 const wishlistRoutes = require('./wishlist.routes');
 const providerBookingRoutes = require('./provider.booking.routes');
 const providerAppointmentRoutes = require('./provider.appointment.routes');
+const businessOwnerRoutes = require('./businessOwner.routes');
 
 // Use auth routes
 router.use('/auth', authRoutes);
@@ -51,6 +52,11 @@ router.use('/appointments', appointmentRoutes);
 // Use wishlist routes
 router.use('/wishlist', wishlistRoutes);
 
-// Add other routes...
+// Use business owner routes
+router.use('/business-owners', businessOwnerRoutes);
+
+// Public settings route (Terms & Conditions, Privacy Policy, etc.)
+const adminController = require('../controllers/adminController');
+router.get('/settings/:key', adminController.getPublicSettings);
 
 module.exports = router;

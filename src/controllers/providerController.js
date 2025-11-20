@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Provider = require('../models/Provider');
+const Portfolio = require('../models/Portfolio');
 const ocrService = require('../utility/ocrService');
 const { generateToken } = require('../utility/jwt');
 const fs = require('fs').promises;
@@ -562,6 +563,420 @@ exports.changePassword = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error changing password',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Add portfolio item
+ * POST /api/providers/portfolio
+ */
+exports.addPortfolioItem = async (req, res) => {
+  try {
+    const { title, about, serviceType, displayOrder } = req.body;
+    const userId = req.user._id;
+
+    // Find provider
+    const provider = await Provider.findOne({ userId });
+    if (!provider) {
+      // Clean up uploaded files
+      if (req.files) {
+        if (req.files.beforeImage) await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+        if (req.files.afterImage) await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+      }
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    // Validate required fields
+    if (!title || !about) {
+      if (req.files) {
+        if (req.files.beforeImage) await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+        if (req.files.afterImage) await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+      }
+      return res.status(400).json({
+        success: false,
+        message: 'Title and description are required'
+      });
+    }
+
+    // Validate images
+    if (!req.files || !req.files.beforeImage || !req.files.afterImage) {
+      if (req.files) {
+        if (req.files.beforeImage) await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+        if (req.files.afterImage) await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+      }
+      return res.status(400).json({
+        success: false,
+        message: 'Both before and after images are required'
+      });
+    }
+
+    // Upload images to Cloudinary
+    let beforeImageUrl, afterImageUrl;
+
+    try {
+      const beforeUpload = await uploadToCloudinary(req.files.beforeImage[0].path, 'portfolio');
+      const afterUpload = await uploadToCloudinary(req.files.afterImage[0].path, 'portfolio');
+
+      if (!beforeUpload.success || !afterUpload.success) {
+        throw new Error('Failed to upload images');
+      }
+
+      beforeImageUrl = beforeUpload.url;
+      afterImageUrl = afterUpload.url;
+
+      // Delete local files after upload
+      await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+      await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+    } catch (uploadError) {
+      // Clean up local files
+      if (req.files.beforeImage) await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+      if (req.files.afterImage) await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to upload images',
+        error: uploadError.message
+      });
+    }
+
+    // Create portfolio item
+    const portfolio = new Portfolio({
+      providerId: provider._id,
+      title,
+      beforeImage: beforeImageUrl,
+      afterImage: afterImageUrl,
+      about,
+      serviceType: serviceType || null,
+      displayOrder: displayOrder || 0
+    });
+
+    await portfolio.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Portfolio item added successfully',
+      data: {
+        portfolio
+      }
+    });
+
+  } catch (error) {
+    console.error('Add portfolio item error:', error);
+
+    // Clean up uploaded files on error
+    if (req.files) {
+      if (req.files.beforeImage) await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+      if (req.files.afterImage) await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while adding portfolio item',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get all portfolio items for current provider
+ * GET /api/providers/portfolio
+ */
+exports.getMyPortfolio = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // Find provider
+    const provider = await Provider.findOne({ userId });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    // Get portfolio items
+    const portfolioItems = await Portfolio.find({
+      providerId: provider._id,
+      isActive: true
+    }).sort({ displayOrder: 1, createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        portfolio: portfolioItems,
+        count: portfolioItems.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Get portfolio error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching portfolio',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get single portfolio item
+ * GET /api/providers/portfolio/:id
+ */
+exports.getPortfolioItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    // Find provider
+    const provider = await Provider.findOne({ userId });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    // Get portfolio item
+    const portfolio = await Portfolio.findOne({
+      _id: id,
+      providerId: provider._id
+    });
+
+    if (!portfolio) {
+      return res.status(404).json({
+        success: false,
+        message: 'Portfolio item not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        portfolio
+      }
+    });
+
+  } catch (error) {
+    console.error('Get portfolio item error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching portfolio item',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Update portfolio item
+ * PUT /api/providers/portfolio/:id
+ */
+exports.updatePortfolioItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, about, serviceType, displayOrder, isActive } = req.body;
+    const userId = req.user._id;
+
+    // Find provider
+    const provider = await Provider.findOne({ userId });
+    if (!provider) {
+      if (req.files) {
+        if (req.files.beforeImage) await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+        if (req.files.afterImage) await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+      }
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    // Find portfolio item
+    const portfolio = await Portfolio.findOne({
+      _id: id,
+      providerId: provider._id
+    });
+
+    if (!portfolio) {
+      if (req.files) {
+        if (req.files.beforeImage) await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+        if (req.files.afterImage) await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+      }
+      return res.status(404).json({
+        success: false,
+        message: 'Portfolio item not found'
+      });
+    }
+
+    // Update text fields
+    if (title !== undefined) portfolio.title = title;
+    if (about !== undefined) portfolio.about = about;
+    if (serviceType !== undefined) portfolio.serviceType = serviceType;
+    if (displayOrder !== undefined) portfolio.displayOrder = displayOrder;
+    if (isActive !== undefined) portfolio.isActive = isActive;
+
+    // Update images if provided
+    if (req.files) {
+      try {
+        if (req.files.beforeImage) {
+          // Upload new before image
+          const beforeUpload = await uploadToCloudinary(req.files.beforeImage[0].path, 'portfolio');
+          if (beforeUpload.success) {
+            // Delete old image from Cloudinary
+            if (portfolio.beforeImage) {
+              const urlParts = portfolio.beforeImage.split('/');
+              const publicIdWithExtension = urlParts.slice(-2).join('/');
+              const publicId = publicIdWithExtension.split('.')[0];
+              await deleteFromCloudinary(publicId);
+            }
+            portfolio.beforeImage = beforeUpload.url;
+          }
+          await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+        }
+
+        if (req.files.afterImage) {
+          // Upload new after image
+          const afterUpload = await uploadToCloudinary(req.files.afterImage[0].path, 'portfolio');
+          if (afterUpload.success) {
+            // Delete old image from Cloudinary
+            if (portfolio.afterImage) {
+              const urlParts = portfolio.afterImage.split('/');
+              const publicIdWithExtension = urlParts.slice(-2).join('/');
+              const publicId = publicIdWithExtension.split('.')[0];
+              await deleteFromCloudinary(publicId);
+            }
+            portfolio.afterImage = afterUpload.url;
+          }
+          await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+        }
+      } catch (uploadError) {
+        console.error('Image upload error during update:', uploadError);
+        // Continue with text field updates even if image upload fails
+      }
+    }
+
+    await portfolio.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Portfolio item updated successfully',
+      data: {
+        portfolio
+      }
+    });
+
+  } catch (error) {
+    console.error('Update portfolio item error:', error);
+
+    if (req.files) {
+      if (req.files.beforeImage) await fs.unlink(req.files.beforeImage[0].path).catch(() => {});
+      if (req.files.afterImage) await fs.unlink(req.files.afterImage[0].path).catch(() => {});
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating portfolio item',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Delete portfolio item
+ * DELETE /api/providers/portfolio/:id
+ */
+exports.deletePortfolioItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    // Find provider
+    const provider = await Provider.findOne({ userId });
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    // Find and delete portfolio item
+    const portfolio = await Portfolio.findOneAndDelete({
+      _id: id,
+      providerId: provider._id
+    });
+
+    if (!portfolio) {
+      return res.status(404).json({
+        success: false,
+        message: 'Portfolio item not found'
+      });
+    }
+
+    // Delete images from Cloudinary
+    try {
+      if (portfolio.beforeImage) {
+        const urlParts = portfolio.beforeImage.split('/');
+        const publicIdWithExtension = urlParts.slice(-2).join('/');
+        const publicId = publicIdWithExtension.split('.')[0];
+        await deleteFromCloudinary(publicId);
+      }
+
+      if (portfolio.afterImage) {
+        const urlParts = portfolio.afterImage.split('/');
+        const publicIdWithExtension = urlParts.slice(-2).join('/');
+        const publicId = publicIdWithExtension.split('.')[0];
+        await deleteFromCloudinary(publicId);
+      }
+    } catch (deleteError) {
+      console.error('Error deleting images from Cloudinary:', deleteError);
+      // Continue even if image deletion fails
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Portfolio item deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete portfolio item error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while deleting portfolio item',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get public portfolio for a provider (for users to view)
+ * GET /api/providers/:providerId/portfolio
+ */
+exports.getProviderPortfolio = async (req, res) => {
+  try {
+    const { providerId } = req.params;
+
+    // Get active portfolio items
+    const portfolioItems = await Portfolio.find({
+      providerId,
+      isActive: true
+    }).sort({ displayOrder: 1, createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        portfolio: portfolioItems,
+        count: portfolioItems.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Get provider portfolio error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching provider portfolio',
       error: error.message
     });
   }

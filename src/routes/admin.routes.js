@@ -75,6 +75,30 @@ router.put(
   adminController.rejectProvider
 );
 
+/**
+ * @route   PUT /api/admin/providers/:id/toggle-status
+ * @desc    Block/Unblock provider
+ * @access  Private (Admin with canManageProviders permission)
+ */
+router.put(
+  '/providers/:id/toggle-status',
+  verifyAdminToken,
+  requirePermission('canManageProviders'),
+  adminController.toggleProviderStatus
+);
+
+/**
+ * @route   DELETE /api/admin/providers/:id
+ * @desc    Delete provider account permanently
+ * @access  Private (Admin with canManageProviders permission)
+ */
+router.delete(
+  '/providers/:id',
+  verifyAdminToken,
+  requirePermission('canManageProviders'),
+  adminController.deleteProvider
+);
+
 // ============ USER MANAGEMENT ============
 
 /**
@@ -91,7 +115,7 @@ router.get(
 
 /**
  * @route   PUT /api/admin/users/:id/toggle-status
- * @desc    Toggle user active/inactive status
+ * @desc    Toggle user active/inactive status (block/unblock)
  * @access  Private (Admin with canManageUsers permission)
  */
 router.put(
@@ -101,7 +125,81 @@ router.put(
   adminController.toggleUserStatus
 );
 
+/**
+ * @route   DELETE /api/admin/users/:id
+ * @desc    Delete user account permanently
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.delete(
+  '/users/:id',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.deleteUser
+);
+
+// ============ BUSINESS OWNER MANAGEMENT ============
+
+/**
+ * @route   GET /api/admin/business-owners
+ * @desc    Get all business owners with search and pagination
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/business-owners',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getAllBusinessOwners
+);
+
+/**
+ * @route   GET /api/admin/business-owners/:id
+ * @desc    Get business owner details
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/business-owners/:id',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getBusinessOwnerDetails
+);
+
+/**
+ * @route   PUT /api/admin/business-owners/:id/toggle-status
+ * @desc    Block/Unblock business owner
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.put(
+  '/business-owners/:id/toggle-status',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.toggleBusinessOwnerStatus
+);
+
+/**
+ * @route   DELETE /api/admin/business-owners/:id
+ * @desc    Delete business owner account permanently
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.delete(
+  '/business-owners/:id',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.deleteBusinessOwner
+);
+
 // ============ ADMIN MANAGEMENT (Super-Admin Only) ============
+
+/**
+ * @route   GET /api/admin/admins
+ * @desc    Get all admins
+ * @access  Private (Super-Admin only)
+ */
+router.get(
+  '/admins',
+  verifyAdminToken,
+  requireSuperAdmin,
+  adminController.getAllAdmins
+);
 
 /**
  * @route   POST /api/admin/admins
@@ -113,6 +211,54 @@ router.post(
   verifyAdminToken,
   requireSuperAdmin,
   adminController.createAdmin
+);
+
+/**
+ * @route   GET /api/admin/admins/:id
+ * @desc    Get admin by ID
+ * @access  Private (Super-Admin only)
+ */
+router.get(
+  '/admins/:id',
+  verifyAdminToken,
+  requireSuperAdmin,
+  adminController.getAdminById
+);
+
+/**
+ * @route   PUT /api/admin/admins/:id
+ * @desc    Update admin
+ * @access  Private (Super-Admin only)
+ */
+router.put(
+  '/admins/:id',
+  verifyAdminToken,
+  requireSuperAdmin,
+  adminController.updateAdmin
+);
+
+/**
+ * @route   PUT /api/admin/admins/:id/toggle-status
+ * @desc    Toggle admin active/inactive status
+ * @access  Private (Super-Admin only)
+ */
+router.put(
+  '/admins/:id/toggle-status',
+  verifyAdminToken,
+  requireSuperAdmin,
+  adminController.toggleAdminStatus
+);
+
+/**
+ * @route   DELETE /api/admin/admins/:id
+ * @desc    Delete admin
+ * @access  Private (Super-Admin only)
+ */
+router.delete(
+  '/admins/:id',
+  verifyAdminToken,
+  requireSuperAdmin,
+  adminController.deleteAdmin
 );
 
 // ============ CATEGORY MANAGEMENT ============
@@ -185,6 +331,44 @@ router.delete(
   verifyAdminToken,
   requirePermission('canManageSettings'),
   categoryController.deleteCategory
+);
+
+// ============ SETTINGS MANAGEMENT ============
+
+/**
+ * @route   GET /api/admin/settings
+ * @desc    Get all settings
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.get(
+  '/settings',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  adminController.getAllSettings
+);
+
+/**
+ * @route   GET /api/admin/settings/:key
+ * @desc    Get settings by key
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.get(
+  '/settings/:key',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  adminController.getSettingsByKey
+);
+
+/**
+ * @route   PUT /api/admin/settings/:key
+ * @desc    Create or update settings (Terms & Conditions, Privacy Policy, etc.)
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.put(
+  '/settings/:key',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  adminController.updateSettings
 );
 
 module.exports = router;

@@ -84,6 +84,12 @@ const uploadProfilePicture = generalUpload.single('profilePicture');
 // Middleware for single service photo upload
 const uploadServicePhoto = generalUpload.single('servicePhoto');
 
+// Middleware for portfolio images (before and after)
+const uploadPortfolioImages = generalUpload.fields([
+  { name: 'beforeImage', maxCount: 1 },
+  { name: 'afterImage', maxCount: 1 }
+]);
+
 // Error handler middleware for multer
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
@@ -118,5 +124,6 @@ module.exports = {
   uploadIdCards,
   uploadProfilePicture,
   uploadServicePhoto,
+  uploadPortfolioImages,
   handleUploadError
 };

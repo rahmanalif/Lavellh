@@ -76,7 +76,7 @@ const userSchema = new mongoose.Schema({
   userType: {
     type: String,
     default: 'user',
-    enum: ['user', 'provider'],
+    enum: ['user', 'provider', 'businessOwner'],
     immutable: true // Cannot be changed after creation
   },
   isActive: {
