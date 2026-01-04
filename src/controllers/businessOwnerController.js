@@ -17,7 +17,11 @@ exports.registerBusinessOwner = async (req, res) => {
       password,
       confirmPassword,
       occupation,
-      referenceId
+      referenceId,
+      dateOfBirth,
+      businessName,
+      businessCategory,
+      businessAddress,
     } = req.body;
 
     // Validate required fields
@@ -25,6 +29,13 @@ exports.registerBusinessOwner = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Full name and password are required'
+      });
+    }
+
+    if (!businessName || !businessCategory){
+      return res.status(400).json({
+        success: false,
+        message: 'Business name and business category are required'
       });
     }
 
@@ -55,6 +66,7 @@ exports.registerBusinessOwner = async (req, res) => {
     // Get ID card image paths
     const idCardFrontPath = req.files?.idCardFront ? req.files.idCardFront[0].path : null;
     const idCardBackPath = req.files?.idCardBack ? req.files.idCardBack[0].path : null;
+    const businessPhotoPath = req.files?.businessPhoto ? req.files.businessPhoto[0].path : null;
 
     // Check if user already exists
     const existingUser = await User.findOne({
@@ -68,6 +80,7 @@ exports.registerBusinessOwner = async (req, res) => {
       // Clean up uploaded files
       if (idCardFrontPath) await fs.unlink(idCardFrontPath).catch(() => {});
       if (idCardBackPath) await fs.unlink(idCardBackPath).catch(() => {});
+      if (businessPhotoPath) await fs.unlink(businessPhotoPath).catch(() => {});
 
       return res.status(400).json({
         success: false,
@@ -78,6 +91,7 @@ exports.registerBusinessOwner = async (req, res) => {
     // Upload ID card images to Cloudinary
     let frontImageUrl = null;
     let backImageUrl = null;
+    let businessPhotoUrl = null;
 
     if (idCardFrontPath) {
       const frontUploadResult = await uploadToCloudinary(idCardFrontPath, 'id-cards');
@@ -95,6 +109,14 @@ exports.registerBusinessOwner = async (req, res) => {
       }
       // Delete local file after upload
       await fs.unlink(idCardBackPath).catch(() => {});
+    }
+
+    if (businessPhotoPath) {
+      const businessUploadResult = await uploadToCloudinary(businessPhotoPath, 'business-photos');
+      if (businessUploadResult.success) {
+        businessPhotoUrl = businessUploadResult.url;
+      }
+      await fs.unlink(businessPhotoPath).catch(() => {});
     }
 
     // Start a database transaction to ensure atomic operations
@@ -118,6 +140,11 @@ exports.registerBusinessOwner = async (req, res) => {
       // Create BusinessOwner profile
       const businessOwner = new BusinessOwner({
         userId: user._id,
+        dateOfBirth: dateOfBirth || null,
+        businessName,
+        businessCategory,
+        businessAddress: businessAddress ? { fullAddress: businessAddress } : null,
+        businessPhoto: businessPhotoUrl,
         idCard: {
           frontImage: frontImageUrl,
           backImage: backImageUrl
@@ -152,6 +179,11 @@ exports.registerBusinessOwner = async (req, res) => {
           },
           businessOwner: {
             id: businessOwner._id,
+            dateOfBirth: businessOwner.dateOfBirth,
+            businessName: businessOwner.businessName,
+            businessCategory: businessOwner.businessCategory,
+            businessAddress: businessOwner.businessAddress,
+            businessPhoto: businessOwner.businessPhoto,
             occupation: businessOwner.occupation,
             referenceId: businessOwner.referenceId,
             idCardUploaded: {
@@ -182,6 +214,9 @@ exports.registerBusinessOwner = async (req, res) => {
       }
       if (req.files.idCardBack) {
         await fs.unlink(req.files.idCardBack[0].path).catch(() => {});
+      }
+      if (req.files.businessPhoto) {
+        await fs.unlink(req.files.businessPhoto[0].path).catch(() => {});
       }
     }
 

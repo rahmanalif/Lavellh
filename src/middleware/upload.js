@@ -78,6 +78,13 @@ const uploadIdCards = idCardUpload.fields([
   { name: 'idCardBack', maxCount: 1 }      // Optional - for records only
 ]);
 
+// Middleware for business owner registration (ID cards + business photo)
+const uploadBusinessOwnerFiles = idCardUpload.fields([
+  { name: 'idCardFront', maxCount: 1 },
+  { name: 'idCardBack', maxCount: 1 },
+  { name: 'businessPhoto', maxCount: 1 }
+]);
+
 // Middleware for single profile picture upload
 const uploadProfilePicture = generalUpload.single('profilePicture');
 
@@ -122,6 +129,7 @@ const handleUploadError = (err, req, res, next) => {
 
 module.exports = {
   uploadIdCards,
+  uploadBusinessOwnerFiles,
   uploadProfilePicture,
   uploadServicePhoto,
   uploadPortfolioImages,

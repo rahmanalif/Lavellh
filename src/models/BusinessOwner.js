@@ -8,6 +8,45 @@ const businessOwnerSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+
+  dateOfBirth: {
+    type: Date,
+    required: true,
+    validate: {
+      validator: function(value) {
+        return !value || value < new Date();
+      },
+      message: 'Date of birth must be in the past'
+    }
+  },
+
+  businessName: {
+    type: String,
+    required: true,
+    trim: true,
+    minlength: [4, 'Business name must be at least 4 characters'],
+    maxlength: [50, 'Business name cannot exceed 100 characters']
+  },
+
+  businessCategory: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    required: true
+  },
+
+  businessAddress: {
+    fullAddress:{
+      type: String,
+      required: true,
+      trim: true}
+  },
+
+  businessPhoto: {
+    type: String, // Cloudinary URL for business photo
+    required: false,
+    default: null
+  },
+
   // ID Card Information
   idCard: {
     frontImage: {

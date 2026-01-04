@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const businessOwnerController = require('../controllers/businessOwnerController');
-const { uploadIdCards, uploadProfilePicture, handleUploadError } = require('../middleware/upload');
+const { uploadIdCards, uploadBusinessOwnerFiles, uploadProfilePicture, handleUploadError } = require('../middleware/upload');
 const auth = require('../middleware/auth');
 
 /**
@@ -11,7 +11,7 @@ const auth = require('../middleware/auth');
  */
 router.post(
   '/register',
-  uploadIdCards,
+  uploadBusinessOwnerFiles,
   handleUploadError,
   businessOwnerController.registerBusinessOwner
 );

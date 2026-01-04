@@ -107,7 +107,7 @@ const providerSchema = new mongoose.Schema({
 });
 
 // Index for faster queries
-providerSchema.index({ userId: 1 });
+// Note: userId already has unique: true which creates an index automatically
 // Note: idCard.idNumber already has a sparse unique index defined in the schema field (line 27)
 providerSchema.index({ verificationStatus: 1 });
 providerSchema.index({ categories: 1 });

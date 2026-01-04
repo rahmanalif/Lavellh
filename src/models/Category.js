@@ -54,8 +54,7 @@ const categorySchema = new mongoose.Schema({
 });
 
 // Index for faster queries
-categorySchema.index({ name: 1 });
-categorySchema.index({ slug: 1 });
+// Note: name and slug already have unique: true which creates indexes automatically
 categorySchema.index({ isActive: 1 });
 categorySchema.index({ parentCategory: 1 });
 
