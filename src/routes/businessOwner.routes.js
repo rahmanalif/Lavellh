@@ -32,16 +32,11 @@ router.get('/me', auth, businessOwnerController.getBusinessOwnerProfile);
 
 /**
  * @route   PUT /api/business-owners/me
- * @desc    Update current business owner profile
+ * @desc    Update current business owner profile (including password change)
  * @access  Private (Business Owner only)
+ * @note    Password fields (currentPassword, newPassword, confirmPassword) are optional
+ *          Only include them when you want to change the password
  */
 router.put('/me', auth, uploadProfilePicture, handleUploadError, businessOwnerController.updateBusinessOwnerProfile);
-
-/**
- * @route   POST /api/business-owners/change-password
- * @desc    Change business owner password
- * @access  Private (Business Owner only)
- */
-router.post('/change-password', auth, businessOwnerController.changePassword);
 
 module.exports = router;

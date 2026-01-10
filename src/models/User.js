@@ -91,10 +91,28 @@ const userSchema = new mongoose.Schema({
   resetPasswordOTPExpires: {
     type: Date,
     select: false // Don't include in queries by default
+  },
+  location: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      default: [0, 0]
+    },
+    address: {
+      type: String,
+      trim: true
+    }
   }
 }, {
   timestamps: true
 });
+
+// Index for geospatial queries
+userSchema.index({ 'location.coordinates': '2dsphere' });
 
 // Ensure at least email or phone is provided (except for OAuth users who may only have providerId)
 userSchema.pre('validate', function(next) {
@@ -168,6 +186,38 @@ userSchema.methods.verifyPasswordResetOTP = function(otp) {
     .digest('hex');
 
   return hashedOTP === this.resetPasswordOTP;
+};
+
+// Generate access token
+userSchema.methods.generateAccessToken = function() {
+  const jwt = require('jsonwebtoken');
+  return jwt.sign(
+    {
+      id: this._id,
+      userType: this.userType
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m' }
+  );
+};
+
+// Generate refresh token
+userSchema.methods.generateRefreshToken = function() {
+  const jwt = require('jsonwebtoken');
+  const crypto = require('crypto');
+
+  // Create a unique token using user ID and random bytes
+  const payload = {
+    id: this._id,
+    userType: this.userType,
+    tokenId: crypto.randomBytes(32).toString('hex')
+  };
+
+  return jwt.sign(
+    payload,
+    process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
+  );
 };
 
 module.exports = mongoose.model('User', userSchema);

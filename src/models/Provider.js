@@ -101,6 +101,19 @@ const providerSchema = new mongoose.Schema({
   completedJobs: {
     type: Number,
     default: 0
+  },
+  isPaidForHomeScreen: {
+    type: Boolean,
+    default: false
+  },
+  paidHomeScreenExpiresAt: {
+    type: Date,
+    default: null
+  },
+  activityTime: {
+    type: String, // e.g., "9:00 AM - 5:00 PM" or "24/7"
+    trim: true,
+    default: ''
   }
 }, {
   timestamps: true
@@ -111,6 +124,7 @@ const providerSchema = new mongoose.Schema({
 // Note: idCard.idNumber already has a sparse unique index defined in the schema field (line 27)
 providerSchema.index({ verificationStatus: 1 });
 providerSchema.index({ categories: 1 });
+providerSchema.index({ isPaidForHomeScreen: 1, paidHomeScreenExpiresAt: 1 });
 
 // Virtual populate to get user details
 providerSchema.virtual('user', {
@@ -126,7 +140,7 @@ providerSchema.set('toObject', { virtuals: true });
 
 // Method to approve provider
 providerSchema.methods.approve = function() {
-  this.verificationStatus = 'approved';
+  this.verificationStatus = 'verified';
   this.idVerifiedAt = new Date();
   return this.save();
 };

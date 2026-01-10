@@ -1,12 +1,15 @@
 const Category = require('../models/Category');
+const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 
 /**
  * Create Category (Admin only)
  * POST /api/admin/categories
+ * Accepts both JSON and form-data (with icon file upload)
  */
 exports.createCategory = async (req, res) => {
   try {
-    const { name, description, icon, parentCategory, displayOrder } = req.body;
+    const { name, description, parentCategory, displayOrder } = req.body;
+    let iconUrl = req.body.icon; // Icon URL if provided as string
 
     // Validate input
     if (!name) {
@@ -39,11 +42,32 @@ exports.createCategory = async (req, res) => {
       }
     }
 
+    // If icon file was uploaded, upload to Cloudinary
+    if (req.file) {
+      const uploadResult = await uploadToCloudinary(req.file.path, 'category-icons');
+
+      if (!uploadResult.success) {
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload icon to Cloudinary',
+          error: uploadResult.error
+        });
+      }
+
+      iconUrl = uploadResult.url;
+
+      // Delete the temporary file from local uploads folder
+      const fs = require('fs');
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+    }
+
     // Create new category
     const category = new Category({
       name,
       description,
-      icon,
+      icon: iconUrl,
       parentCategory: parentCategory || null,
       displayOrder: displayOrder || 0,
       createdBy: req.admin._id
@@ -153,11 +177,13 @@ exports.getCategoryByIdAdmin = async (req, res) => {
 /**
  * Update Category (Admin only)
  * PUT /api/admin/categories/:id
+ * Accepts both JSON and form-data (with icon file upload)
  */
 exports.updateCategory = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, icon, parentCategory, displayOrder, isActive } = req.body;
+    const { name, description, parentCategory, displayOrder, isActive } = req.body;
+    let iconUrl = req.body.icon; // Icon URL if provided as string
 
     const category = await Category.findById(id);
 
@@ -202,10 +228,34 @@ exports.updateCategory = async (req, res) => {
       }
     }
 
+    // If icon file was uploaded, upload to Cloudinary
+    if (req.file) {
+      const uploadResult = await uploadToCloudinary(req.file.path, 'category-icons');
+
+      if (!uploadResult.success) {
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload icon to Cloudinary',
+          error: uploadResult.error
+        });
+      }
+
+      iconUrl = uploadResult.url;
+
+      // Delete the temporary file from local uploads folder
+      const fs = require('fs');
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+
+      // Optionally delete old icon from Cloudinary if it exists
+      // (You can implement this later if needed)
+    }
+
     // Update fields
     if (name !== undefined) category.name = name;
     if (description !== undefined) category.description = description;
-    if (icon !== undefined) category.icon = icon;
+    if (iconUrl !== undefined) category.icon = iconUrl;
     if (parentCategory !== undefined) category.parentCategory = parentCategory || null;
     if (displayOrder !== undefined) category.displayOrder = displayOrder;
     if (isActive !== undefined) category.isActive = isActive;
@@ -317,6 +367,56 @@ exports.toggleCategoryStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while updating category status',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Upload Category Icon to Cloudinary (Admin only)
+ * POST /api/admin/categories/upload-icon
+ */
+exports.uploadCategoryIcon = async (req, res) => {
+  try {
+    // Check if file was uploaded
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No icon file uploaded'
+      });
+    }
+
+    // Upload to Cloudinary
+    const uploadResult = await uploadToCloudinary(req.file.path, 'category-icons');
+
+    if (!uploadResult.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to upload icon to Cloudinary',
+        error: uploadResult.error
+      });
+    }
+
+    // Delete the temporary file from local uploads folder
+    const fs = require('fs');
+    if (fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Icon uploaded successfully',
+      data: {
+        iconUrl: uploadResult.url,
+        publicId: uploadResult.publicId
+      }
+    });
+
+  } catch (error) {
+    console.error('Upload category icon error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while uploading icon',
       error: error.message
     });
   }

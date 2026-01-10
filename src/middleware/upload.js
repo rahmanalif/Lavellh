@@ -97,6 +97,9 @@ const uploadPortfolioImages = generalUpload.fields([
   { name: 'afterImage', maxCount: 1 }
 ]);
 
+// Middleware for single category icon upload
+const uploadCategoryIcon = generalUpload.single('icon');
+
 // Error handler middleware for multer
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
@@ -133,5 +136,6 @@ module.exports = {
   uploadProfilePicture,
   uploadServicePhoto,
   uploadPortfolioImages,
+  uploadCategoryIcon,
   handleUploadError
 };

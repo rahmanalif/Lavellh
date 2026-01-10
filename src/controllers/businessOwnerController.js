@@ -1,8 +1,10 @@
 const User = require('../models/User');
 const BusinessOwner = require('../models/BusinessOwner');
-const { generateToken } = require('../utility/jwt');
+const RefreshToken = require('../models/RefreshToken');
+const { getTokenExpiresIn } = require('../utility/jwt');
 const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
+const crypto = require('crypto');
 
 /**
  * Register a new business owner
@@ -158,11 +160,29 @@ exports.registerBusinessOwner = async (req, res) => {
       // Commit the transaction
       await session.commitTransaction();
 
-      // Generate JWT token
-      const token = generateToken({
-        id: user._id,
-        userType: user.userType
+      // Generate access token and refresh token
+      const accessToken = user.generateAccessToken();
+      const refreshToken = user.generateRefreshToken();
+
+      // Calculate refresh token expiration
+      const refreshExpiresIn = getTokenExpiresIn('refresh');
+      const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+      // Store refresh token in database
+      const refreshTokenDoc = new RefreshToken({
+        userId: user._id,
+        token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+        expiresAt,
+        deviceInfo: {
+          userAgent: req.headers['user-agent'],
+          ip: req.ip || req.connection.remoteAddress
+        }
       });
+
+      await refreshTokenDoc.save();
+
+      // Get access token expiration time
+      const accessExpiresIn = getTokenExpiresIn('access');
 
       // Return success response
       res.status(201).json({
@@ -191,7 +211,10 @@ exports.registerBusinessOwner = async (req, res) => {
               back: !!backImageUrl
             }
           },
-          token
+          accessToken,
+          refreshToken,
+          expiresIn: accessExpiresIn,
+          tokenType: 'Bearer'
         }
       });
 
@@ -288,11 +311,29 @@ exports.loginBusinessOwner = async (req, res) => {
       });
     }
 
-    // Generate JWT token
-    const token = generateToken({
-      id: user._id,
-      userType: user.userType
+    // Generate access token and refresh token
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    // Calculate refresh token expiration
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    // Store refresh token in database
+    const refreshTokenDoc = new RefreshToken({
+      userId: user._id,
+      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+      expiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
     });
+
+    await refreshTokenDoc.save();
+
+    // Get access token expiration time
+    const accessExpiresIn = getTokenExpiresIn('access');
 
     // Return success response
     res.status(200).json({
@@ -312,7 +353,10 @@ exports.loginBusinessOwner = async (req, res) => {
           occupation: businessOwner.occupation,
           referenceId: businessOwner.referenceId
         },
-        token
+        accessToken,
+        refreshToken,
+        expiresIn: accessExpiresIn,
+        tokenType: 'Bearer'
       }
     });
 
@@ -370,13 +414,17 @@ exports.updateBusinessOwnerProfile = async (req, res) => {
       fullName,
       email,
       phoneNumber,
-      occupation
+      dateOfBirth,
+      occupation,
+      currentPassword,
+      newPassword,
+      confirmPassword
     } = req.body;
 
     const userId = req.user._id;
 
     // Find user and business owner
-    const user = await User.findById(userId);
+    const user = await User.findById(userId).select('+password');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -390,6 +438,62 @@ exports.updateBusinessOwnerProfile = async (req, res) => {
         success: false,
         message: 'Business owner profile not found'
       });
+    }
+
+    // Handle password change if provided (all three password fields must be present)
+    if (currentPassword || newPassword || confirmPassword) {
+      // Validate all password fields are provided
+      if (!currentPassword || !newPassword || !confirmPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'To change password, current password, new password, and confirm password are all required'
+        });
+      }
+
+      // Validate new password and confirm password match
+      if (newPassword !== confirmPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'New password and confirm password do not match'
+        });
+      }
+
+      // Validate new password strength
+      if (newPassword.length < 6) {
+        return res.status(400).json({
+          success: false,
+          message: 'New password must be at least 6 characters long'
+        });
+      }
+
+      // Check if user has a password (OAuth users might not)
+      if (!user.password) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot change password for OAuth-authenticated accounts'
+        });
+      }
+
+      // Verify current password
+      const isPasswordValid = await user.comparePassword(currentPassword);
+      if (!isPasswordValid) {
+        return res.status(400).json({
+          success: false,
+          message: 'Current password is incorrect'
+        });
+      }
+
+      // Check if new password is same as current
+      const isSamePassword = await user.comparePassword(newPassword);
+      if (isSamePassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'New password must be different from current password'
+        });
+      }
+
+      // Update password
+      user.password = newPassword;
     }
 
     // Check if email is being changed and already exists
@@ -458,6 +562,22 @@ exports.updateBusinessOwnerProfile = async (req, res) => {
 
     // Update business owner specific fields
     if (occupation !== undefined) businessOwner.occupation = occupation;
+    if (dateOfBirth) {
+      const dob = new Date(dateOfBirth);
+      if (isNaN(dob.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid date of birth format'
+        });
+      }
+      if (dob >= new Date()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Date of birth must be in the past'
+        });
+      }
+      businessOwner.dateOfBirth = dob;
+    }
 
     await businessOwner.save();
 
@@ -475,8 +595,12 @@ exports.updateBusinessOwnerProfile = async (req, res) => {
         },
         businessOwner: {
           id: businessOwner._id,
+          dateOfBirth: businessOwner.dateOfBirth,
           occupation: businessOwner.occupation,
-          referenceId: businessOwner.referenceId
+          referenceId: businessOwner.referenceId,
+          businessName: businessOwner.businessName,
+          businessCategory: businessOwner.businessCategory,
+          businessAddress: businessOwner.businessAddress
         }
       }
     });
@@ -501,88 +625,3 @@ exports.updateBusinessOwnerProfile = async (req, res) => {
   }
 };
 
-/**
- * Change business owner password
- * POST /api/business-owners/change-password
- */
-exports.changePassword = async (req, res) => {
-  try {
-    const { currentPassword, newPassword, confirmPassword } = req.body;
-    const userId = req.user._id;
-
-    // Validate required fields
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'All password fields are required'
-      });
-    }
-
-    // Validate new password and confirm password match
-    if (newPassword !== confirmPassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'New password and confirm password do not match'
-      });
-    }
-
-    // Validate new password strength
-    if (newPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: 'New password must be at least 6 characters long'
-      });
-    }
-
-    // Find user with password field
-    const user = await User.findById(userId).select('+password');
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    // Check if user has a password (OAuth users might not)
-    if (!user.password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot change password for OAuth-authenticated accounts'
-      });
-    }
-
-    // Verify current password
-    const isPasswordValid = await user.comparePassword(currentPassword);
-    if (!isPasswordValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Current password is incorrect'
-      });
-    }
-
-    // Check if new password is same as current
-    const isSamePassword = await user.comparePassword(newPassword);
-    if (isSamePassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'New password must be different from current password'
-      });
-    }
-
-    // Update password
-    user.password = newPassword;
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'Password changed successfully'
-    });
-  } catch (error) {
-    console.error('Password change error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error changing password',
-      error: error.message
-    });
-  }
-};

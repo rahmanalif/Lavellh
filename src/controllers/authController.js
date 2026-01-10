@@ -1,7 +1,9 @@
 const User = require('../models/User');
-const { generateToken } = require('../utility/jwt'); // Changed from '../utils/jwt'
+const RefreshToken = require('../models/RefreshToken');
+const { generateToken, getTokenExpiresIn } = require('../utility/jwt');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const fs = require('fs').promises;
+const crypto = require('crypto');
 
 
 // Register user
@@ -64,11 +66,29 @@ const register = async (req, res) => {
 
     await user.save();
 
-    // Generate token
-    const token = generateToken({
-      id: user._id,
-      userType: user.userType
+    // Generate access token and refresh token
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    // Calculate refresh token expiration
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    // Store refresh token in database
+    const refreshTokenDoc = new RefreshToken({
+      userId: user._id,
+      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+      expiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
     });
+
+    await refreshTokenDoc.save();
+
+    // Get access token expiration time
+    const accessExpiresIn = getTokenExpiresIn('access');
 
     res.status(201).json({
       success: true,
@@ -81,7 +101,10 @@ const register = async (req, res) => {
           phoneNumber: user.phoneNumber,
           userType: user.userType
         },
-        token
+        accessToken,
+        refreshToken,
+        expiresIn: accessExpiresIn,
+        tokenType: 'Bearer'
       }
     });
   } catch (error) {
@@ -158,11 +181,29 @@ const login = async (req, res) => {
       });
     }
 
-    // Generate token
-    const token = generateToken({
-      id: user._id,
-      userType: user.userType
+    // Generate access token and refresh token
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    // Calculate refresh token expiration
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    // Store refresh token in database
+    const refreshTokenDoc = new RefreshToken({
+      userId: user._id,
+      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+      expiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
     });
+
+    await refreshTokenDoc.save();
+
+    // Get access token expiration time
+    const accessExpiresIn = getTokenExpiresIn('access');
 
     res.json({
       success: true,
@@ -175,7 +216,10 @@ const login = async (req, res) => {
           phoneNumber: user.phoneNumber,
           userType: user.userType
         },
-        token
+        accessToken,
+        refreshToken,
+        expiresIn: accessExpiresIn,
+        tokenType: 'Bearer'
       }
     });
   } catch (error) {
@@ -264,6 +308,37 @@ const updateProfile = async (req, res) => {
     if (email) user.email = email;
     if (phoneNumber) user.phoneNumber = phoneNumber;
 
+    // Update location if provided
+    const { latitude, longitude, address } = req.body;
+    if (latitude !== undefined && longitude !== undefined) {
+      const lat = parseFloat(latitude);
+      const lon = parseFloat(longitude);
+
+      if (isNaN(lat) || isNaN(lon)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid latitude or longitude'
+        });
+      }
+
+      user.location = {
+        type: 'Point',
+        coordinates: [lon, lat], // [longitude, latitude] - GeoJSON format
+        address: address || user.location?.address || ''
+      };
+    } else if (address) {
+      // Update only address if coordinates not provided
+      if (!user.location) {
+        user.location = {
+          type: 'Point',
+          coordinates: [0, 0],
+          address: address
+        };
+      } else {
+        user.location.address = address;
+      }
+    }
+
     // Handle profile picture upload
     if (req.file) {
       try {
@@ -303,7 +378,13 @@ const updateProfile = async (req, res) => {
           email: user.email,
           phoneNumber: user.phoneNumber,
           profilePicture: user.profilePicture,
-          userType: user.userType
+          userType: user.userType,
+          location: user.location ? {
+            latitude: user.location.coordinates[1],
+            longitude: user.location.coordinates[0],
+            address: user.location.address,
+            coordinates: user.location.coordinates
+          } : null
         }
       }
     });
@@ -410,10 +491,391 @@ const changePassword = async (req, res) => {
   }
 };
 
+// Update user location
+const updateLocation = async (req, res) => {
+  try {
+    const { latitude, longitude, address } = req.body;
+    const userId = req.user._id;
+
+    // Validate coordinates
+    if (latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Latitude and longitude are required'
+      });
+    }
+
+    const lat = parseFloat(latitude);
+    const lon = parseFloat(longitude);
+
+    if (isNaN(lat) || isNaN(lon)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid latitude or longitude'
+      });
+    }
+
+    // Validate coordinate ranges
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      return res.status(400).json({
+        success: false,
+        message: 'Coordinates out of valid range'
+      });
+    }
+
+    // Find and update user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    user.location = {
+      type: 'Point',
+      coordinates: [lon, lat], // [longitude, latitude] - GeoJSON format
+      address: address || user.location?.address || ''
+    };
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Location updated successfully',
+      data: {
+        location: {
+          latitude: lat,
+          longitude: lon,
+          address: user.location.address,
+          coordinates: user.location.coordinates
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Location update error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error updating location',
+      error: error.message
+    });
+  }
+};
+
+// Refresh access token
+const refreshAccessToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    // Verify refresh token
+    const { verifyRefreshToken } = require('../utility/jwt');
+    let decoded;
+    try {
+      decoded = verifyRefreshToken(refreshToken);
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token'
+      });
+    }
+
+    // Hash the refresh token to compare with database
+    const hashedToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
+
+    // Find refresh token in database
+    const storedToken = await RefreshToken.findOne({
+      token: hashedToken,
+      userId: decoded.id
+    });
+
+    if (!storedToken || !storedToken.isValid()) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token'
+      });
+    }
+
+    // Find user
+    const user = await User.findById(decoded.id);
+    if (!user || !user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not found or inactive'
+      });
+    }
+
+    // Generate new access token
+    const accessToken = user.generateAccessToken();
+
+    // Optional: Implement refresh token rotation
+    // Generate new refresh token and revoke old one
+    const newRefreshToken = user.generateRefreshToken();
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    // Revoke old refresh token
+    storedToken.isRevoked = true;
+    await storedToken.save();
+
+    // Store new refresh token
+    const newRefreshTokenDoc = new RefreshToken({
+      userId: user._id,
+      token: crypto.createHash('sha256').update(newRefreshToken).digest('hex'),
+      expiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
+    });
+
+    await newRefreshTokenDoc.save();
+
+    // Update last used time
+    storedToken.lastUsedAt = new Date();
+
+    // Get access token expiration time
+    const accessExpiresIn = getTokenExpiresIn('access');
+
+    res.json({
+      success: true,
+      message: 'Token refreshed successfully',
+      data: {
+        accessToken,
+        refreshToken: newRefreshToken,
+        expiresIn: accessExpiresIn,
+        tokenType: 'Bearer'
+      }
+    });
+  } catch (error) {
+    console.error('Token refresh error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error refreshing token',
+      error: error.message
+    });
+  }
+};
+
+// Logout user
+const logout = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    // Hash the refresh token
+    const hashedToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
+
+    // Find and revoke the refresh token
+    const storedToken = await RefreshToken.findOne({
+      token: hashedToken
+    });
+
+    if (storedToken) {
+      storedToken.isRevoked = true;
+      await storedToken.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout',
+      error: error.message
+    });
+  }
+};
+
+// Logout from all devices
+const logoutAll = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // Revoke all refresh tokens for this user
+    await RefreshToken.revokeAllForUser(userId);
+
+    res.json({
+      success: true,
+      message: 'Logged out from all devices successfully'
+    });
+  } catch (error) {
+    console.error('Logout all error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout',
+      error: error.message
+    });
+  }
+};
+
+// Get user's recent providers (from bookings and appointments)
+const getRecentProviders = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const Booking = require('../models/Booking');
+    const Appointment = require('../models/Appointment');
+    const Provider = require('../models/Provider');
+
+    // Get unique provider IDs from bookings (including pending)
+    const bookingProviders = await Booking.distinct('providerId', {
+      userId: userId,
+      bookingStatus: { $in: ['pending', 'confirmed', 'in_progress', 'completed'] }
+    });
+
+    // Get unique provider IDs from appointments (including pending)
+    const appointmentProviders = await Appointment.distinct('providerId', {
+      userId: userId,
+      appointmentStatus: { $in: ['pending', 'confirmed', 'in_progress', 'completed'] }
+    });
+
+    // Combine and get unique provider IDs
+    const allProviderIds = [...new Set([...bookingProviders, ...appointmentProviders])];
+
+    if (allProviderIds.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No recent providers found',
+        data: {
+          providers: [],
+          count: 0
+        }
+      });
+    }
+
+    // Get provider details with user information
+    const providers = await Provider.find({
+      _id: { $in: allProviderIds },
+      verificationStatus: 'verified'
+    })
+    .populate('userId', 'fullName email phoneNumber profilePicture location')
+    .populate('categories', 'name icon')
+    .select('userId categories rating totalReviews isAvailable completedJobs occupation activityTime createdAt')
+    .sort({ updatedAt: -1 });
+
+    // Get the most recent interaction date for each provider
+    const providersWithLastService = await Promise.all(
+      providers.map(async (provider) => {
+        // Find most recent booking (including pending)
+        const lastBooking = await Booking.findOne({
+          userId: userId,
+          providerId: provider._id,
+          bookingStatus: { $in: ['pending', 'confirmed', 'in_progress', 'completed'] }
+        })
+        .sort({ createdAt: -1 })
+        .select('bookingDate createdAt bookingStatus');
+
+        // Find most recent appointment (including pending)
+        const lastAppointment = await Appointment.findOne({
+          userId: userId,
+          providerId: provider._id,
+          appointmentStatus: { $in: ['pending', 'confirmed', 'in_progress', 'completed'] }
+        })
+        .sort({ createdAt: -1 })
+        .select('appointmentDate createdAt appointmentStatus');
+
+        // Determine which is more recent
+        let lastServiceDate = null;
+        let lastServiceType = null;
+        let lastServiceStatus = null;
+
+        if (lastBooking && lastAppointment) {
+          if (lastBooking.createdAt > lastAppointment.createdAt) {
+            lastServiceDate = lastBooking.bookingDate;
+            lastServiceType = 'booking';
+            lastServiceStatus = lastBooking.bookingStatus;
+          } else {
+            lastServiceDate = lastAppointment.appointmentDate;
+            lastServiceType = 'appointment';
+            lastServiceStatus = lastAppointment.appointmentStatus;
+          }
+        } else if (lastBooking) {
+          lastServiceDate = lastBooking.bookingDate;
+          lastServiceType = 'booking';
+          lastServiceStatus = lastBooking.bookingStatus;
+        } else if (lastAppointment) {
+          lastServiceDate = lastAppointment.appointmentDate;
+          lastServiceType = 'appointment';
+          lastServiceStatus = lastAppointment.appointmentStatus;
+        }
+
+        return {
+          id: provider._id,
+          fullName: provider.userId?.fullName || 'Unknown',
+          email: provider.userId?.email,
+          phoneNumber: provider.userId?.phoneNumber,
+          profilePicture: provider.userId?.profilePicture,
+          location: provider.userId?.location ? {
+            latitude: provider.userId.location.coordinates[1],
+            longitude: provider.userId.location.coordinates[0],
+            address: provider.userId.location.address
+          } : null,
+          categories: provider.categories || [],
+          rating: provider.rating || 0,
+          totalReviews: provider.totalReviews || 0,
+          isAvailable: provider.isAvailable,
+          completedJobs: provider.completedJobs || 0,
+          occupation: provider.occupation || '',
+          activityTime: provider.activityTime || '',
+          lastService: {
+            date: lastServiceDate,
+            type: lastServiceType,
+            status: lastServiceStatus
+          },
+          joinedAt: provider.createdAt
+        };
+      })
+    );
+
+    // Sort by most recent service date
+    providersWithLastService.sort((a, b) => {
+      const dateA = a.lastService.date ? new Date(a.lastService.date) : new Date(0);
+      const dateB = b.lastService.date ? new Date(b.lastService.date) : new Date(0);
+      return dateB - dateA;
+    });
+
+    res.json({
+      success: true,
+      message: 'Recent providers fetched successfully',
+      data: {
+        providers: providersWithLastService,
+        count: providersWithLastService.length
+      }
+    });
+  } catch (error) {
+    console.error('Get recent providers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching recent providers',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
   getMe,
   updateProfile,
-  changePassword
+  changePassword,
+  updateLocation,
+  refreshAccessToken,
+  logout,
+  logoutAll,
+  getRecentProviders
 };

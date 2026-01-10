@@ -3,6 +3,7 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const categoryController = require('../controllers/categoryController');
 const { verifyAdminToken, requirePermission, requireSuperAdmin } = require('../middleware/adminAuth');
+const { uploadCategoryIcon, handleUploadError } = require('../middleware/upload');
 
 /**
  * @route   POST /api/admin/login
@@ -264,14 +265,30 @@ router.delete(
 // ============ CATEGORY MANAGEMENT ============
 
 /**
+ * @route   POST /api/admin/categories/upload-icon
+ * @desc    Upload category icon to Cloudinary
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.post(
+  '/categories/upload-icon',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  uploadCategoryIcon,
+  handleUploadError,
+  categoryController.uploadCategoryIcon
+);
+
+/**
  * @route   POST /api/admin/categories
- * @desc    Create new category
+ * @desc    Create new category (supports both JSON and form-data with icon upload)
  * @access  Private (Admin with canManageSettings permission)
  */
 router.post(
   '/categories',
   verifyAdminToken,
   requirePermission('canManageSettings'),
+  uploadCategoryIcon,
+  handleUploadError,
   categoryController.createCategory
 );
 
@@ -299,13 +316,15 @@ router.get(
 
 /**
  * @route   PUT /api/admin/categories/:id
- * @desc    Update category
+ * @desc    Update category (supports both JSON and form-data with icon upload)
  * @access  Private (Admin with canManageSettings permission)
  */
 router.put(
   '/categories/:id',
   verifyAdminToken,
   requirePermission('canManageSettings'),
+  uploadCategoryIcon,
+  handleUploadError,
   categoryController.updateCategory
 );
 

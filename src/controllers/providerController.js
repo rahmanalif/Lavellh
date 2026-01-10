@@ -1,10 +1,12 @@
 const User = require('../models/User');
 const Provider = require('../models/Provider');
 const Portfolio = require('../models/Portfolio');
+const RefreshToken = require('../models/RefreshToken');
 const ocrService = require('../utility/ocrService');
-const { generateToken } = require('../utility/jwt');
+const { getTokenExpiresIn } = require('../utility/jwt');
 const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
+const crypto = require('crypto');
 
 /**
  * Register a new provider
@@ -120,11 +122,29 @@ exports.registerProvider = async (req, res) => {
       // Commit the transaction
       await session.commitTransaction();
 
-      // Generate JWT token
-      const token = generateToken({
-        id: user._id,
-        userType: user.userType
+      // Generate access token and refresh token
+      const accessToken = user.generateAccessToken();
+      const refreshToken = user.generateRefreshToken();
+
+      // Calculate refresh token expiration
+      const refreshExpiresIn = getTokenExpiresIn('refresh');
+      const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+      // Store refresh token in database
+      const refreshTokenDoc = new RefreshToken({
+        userId: user._id,
+        token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+        expiresAt,
+        deviceInfo: {
+          userAgent: req.headers['user-agent'],
+          ip: req.ip || req.connection.remoteAddress
+        }
       });
+
+      await refreshTokenDoc.save();
+
+      // Get access token expiration time
+      const accessExpiresIn = getTokenExpiresIn('access');
 
       // Return success response
       res.status(201).json({
@@ -149,7 +169,10 @@ exports.registerProvider = async (req, res) => {
               back: !!idCardBackPath
             }
           },
-          token
+          accessToken,
+          refreshToken,
+          expiresIn: accessExpiresIn,
+          tokenType: 'Bearer'
         }
       });
 
@@ -252,11 +275,29 @@ exports.loginProvider = async (req, res) => {
       });
     }
 
-    // Generate JWT token
-    const token = generateToken({
-      id: user._id,
-      userType: user.userType
+    // Generate access token and refresh token
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    // Calculate refresh token expiration
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    // Store refresh token in database
+    const refreshTokenDoc = new RefreshToken({
+      userId: user._id,
+      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+      expiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
     });
+
+    await refreshTokenDoc.save();
+
+    // Get access token expiration time
+    const accessExpiresIn = getTokenExpiresIn('access');
 
     // Return success response
     res.status(200).json({
@@ -280,7 +321,10 @@ exports.loginProvider = async (req, res) => {
           completedJobs: provider.completedJobs,
           isAvailable: provider.isAvailable
         },
-        token
+        accessToken,
+        refreshToken,
+        expiresIn: accessExpiresIn,
+        tokenType: 'Bearer'
       }
     });
 
@@ -397,6 +441,40 @@ exports.updateProviderProfile = async (req, res) => {
     if (email) user.email = email.toLowerCase();
     if (phoneNumber) user.phoneNumber = phoneNumber;
 
+    // Update location if provided
+    const { latitude, longitude, address, activityTime } = req.body;
+    if (latitude !== undefined && longitude !== undefined) {
+      const lat = parseFloat(latitude);
+      const lon = parseFloat(longitude);
+
+      if (isNaN(lat) || isNaN(lon)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid latitude or longitude'
+        });
+      }
+
+      user.location = {
+        type: 'Point',
+        coordinates: [lon, lat], // [longitude, latitude] - GeoJSON format
+        address: address || user.location?.address || ''
+      };
+    } else if (address) {
+      // Update only address if coordinates not provided
+      if (!user.location) {
+        user.location = {
+          type: 'Point',
+          coordinates: [0, 0],
+          address: address
+        };
+      } else {
+        user.location.address = address;
+      }
+    }
+
+    // Update activity time in provider
+    if (activityTime !== undefined) provider.activityTime = activityTime;
+
     // Handle profile picture upload
     if (req.file) {
       try {
@@ -447,7 +525,13 @@ exports.updateProviderProfile = async (req, res) => {
           email: user.email,
           phoneNumber: user.phoneNumber,
           profilePicture: user.profilePicture,
-          userType: user.userType
+          userType: user.userType,
+          location: user.location ? {
+            latitude: user.location.coordinates[1],
+            longitude: user.location.coordinates[0],
+            address: user.location.address,
+            coordinates: user.location.coordinates
+          } : null
         },
         provider: {
           id: provider._id,
@@ -457,7 +541,8 @@ exports.updateProviderProfile = async (req, res) => {
           verificationStatus: provider.verificationStatus,
           rating: provider.rating,
           totalReviews: provider.totalReviews,
-          completedJobs: provider.completedJobs
+          completedJobs: provider.completedJobs,
+          activityTime: provider.activityTime
         }
       }
     });
