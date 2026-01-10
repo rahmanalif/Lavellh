@@ -88,6 +88,6 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`✅ Server is running on port ${PORT}`);
-  console.log(`📍 Visit: http://localhost:${PORT}`);
+  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🚀 Express version: ${require('express/package.json').version}`);
 });
