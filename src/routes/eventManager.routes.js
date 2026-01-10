@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const eventManagerController = require('../controllers/eventManagerController');
-const { uploadEventManagerFiles, uploadProfilePicture, handleUploadError } = require('../middleware/upload');
+const eventController = require('../controllers/eventController');
+const { uploadEventManagerFiles, uploadProfilePicture, uploadEventImage, handleUploadError } = require('../middleware/upload');
 const auth = require('../middleware/auth');
 
 /**
@@ -38,5 +39,67 @@ router.get('/me', auth, eventManagerController.getEventManagerProfile);
  *          Only include them when you want to change the password
  */
 router.put('/me', auth, uploadProfilePicture, handleUploadError, eventManagerController.updateEventManagerProfile);
+
+// ============ EVENT MANAGEMENT ROUTES ============
+
+/**
+ * @route   POST /api/event-managers/events
+ * @desc    Create a new event (draft)
+ * @access  Private (Event Manager only)
+ */
+router.post('/events', auth, uploadEventImage, handleUploadError, eventController.createEvent);
+
+/**
+ * @route   GET /api/event-managers/events/stats
+ * @desc    Get event statistics for the authenticated event manager
+ * @access  Private (Event Manager only)
+ */
+router.get('/events/stats', auth, eventController.getEventStats);
+
+/**
+ * @route   GET /api/event-managers/events
+ * @desc    Get all events for the authenticated event manager
+ * @access  Private (Event Manager only)
+ * @query   status - Filter by event status (draft, published, cancelled, completed)
+ * @query   page - Page number (default: 1)
+ * @query   limit - Items per page (default: 10)
+ */
+router.get('/events', auth, eventController.getMyEvents);
+
+/**
+ * @route   GET /api/event-managers/events/:id
+ * @desc    Get a single event by ID
+ * @access  Private (Event Manager only)
+ */
+router.get('/events/:id', auth, eventController.getEventById);
+
+/**
+ * @route   PUT /api/event-managers/events/:id
+ * @desc    Update an event (draft or published without tickets sold)
+ * @access  Private (Event Manager only)
+ */
+router.put('/events/:id', auth, uploadEventImage, handleUploadError, eventController.updateEvent);
+
+/**
+ * @route   PUT /api/event-managers/events/:id/publish
+ * @desc    Publish an event (change status from draft to published)
+ * @access  Private (Event Manager only)
+ */
+router.put('/events/:id/publish', auth, eventController.publishEvent);
+
+/**
+ * @route   PUT /api/event-managers/events/:id/cancel
+ * @desc    Cancel an event
+ * @access  Private (Event Manager only)
+ * @body    cancellationReason - Reason for cancellation
+ */
+router.put('/events/:id/cancel', auth, eventController.cancelEvent);
+
+/**
+ * @route   DELETE /api/event-managers/events/:id
+ * @desc    Delete an event (only drafts with no tickets sold)
+ * @access  Private (Event Manager only)
+ */
+router.delete('/events/:id', auth, eventController.deleteEvent);
 
 module.exports = router;
