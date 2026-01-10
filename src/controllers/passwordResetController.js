@@ -204,7 +204,6 @@ const resetPassword = async (req, res) => {
         message: 'Invalid or expired OTP. Please request a new one.'
       });
     }
-
     // Update password
     user.password = newPassword;
     user.resetPasswordOTP = undefined;
