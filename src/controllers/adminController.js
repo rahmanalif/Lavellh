@@ -2,6 +2,7 @@ const Admin = require('../models/Admin');
 const User = require('../models/User');
 const Provider = require('../models/Provider');
 const BusinessOwner = require('../models/BusinessOwner');
+const EventManager = require('../models/EventManager');
 const Settings = require('../models/Settings');
 const { generateToken } = require('../utility/jwt');
 const { deleteFromCloudinary } = require('../utility/cloudinary');
@@ -1160,6 +1161,224 @@ exports.deleteBusinessOwner = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while deleting business owner',
+      error: error.message
+    });
+  }
+};
+
+// ============ EVENT MANAGER MANAGEMENT ============
+
+/**
+ * Get All Event Managers with Search and Pagination
+ * GET /api/admin/event-managers
+ */
+exports.getAllEventManagers = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search } = req.query;
+
+    // Build search query for users
+    let userQuery = { userType: 'eventManager' };
+
+    if (search) {
+      userQuery.$or = [
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phoneNumber: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Find matching user IDs first
+    const matchingUsers = await User.find(userQuery).select('_id');
+    const userIds = matchingUsers.map(u => u._id);
+
+    const eventManagers = await EventManager.find({ userId: { $in: userIds } })
+      .populate('userId', 'fullName email phoneNumber isActive createdAt profilePicture')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const count = await EventManager.countDocuments({ userId: { $in: userIds } });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        eventManagers,
+        totalPages: Math.ceil(count / limit),
+        currentPage: parseInt(page),
+        total: count
+      }
+    });
+
+  } catch (error) {
+    console.error('Get all event managers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching event managers',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Event Manager Details
+ * GET /api/admin/event-managers/:id
+ */
+exports.getEventManagerDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const eventManager = await EventManager.findById(id)
+      .populate('userId', '-password -resetPasswordOTP -resetPasswordOTPExpires');
+
+    if (!eventManager) {
+      return res.status(404).json({
+        success: false,
+        message: 'Event manager not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        eventManager
+      }
+    });
+
+  } catch (error) {
+    console.error('Get event manager details error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching event manager details',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Toggle Event Manager Active Status (Block/Unblock)
+ * PUT /api/admin/event-managers/:id/toggle-status
+ */
+exports.toggleEventManagerStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const eventManager = await EventManager.findById(id);
+
+    if (!eventManager) {
+      return res.status(404).json({
+        success: false,
+        message: 'Event manager not found'
+      });
+    }
+
+    // Toggle the user's isActive status
+    const user = await User.findById(eventManager.userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    user.isActive = !user.isActive;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Event manager ${user.isActive ? 'unblocked' : 'blocked'} successfully`,
+      data: {
+        eventManager: {
+          id: eventManager._id,
+          userId: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          isActive: user.isActive
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Toggle event manager status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating event manager status',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Delete Event Manager Account Permanently
+ * DELETE /api/admin/event-managers/:id
+ */
+exports.deleteEventManager = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const eventManager = await EventManager.findById(id);
+
+    if (!eventManager) {
+      return res.status(404).json({
+        success: false,
+        message: 'Event manager not found'
+      });
+    }
+
+    const userId = eventManager.userId;
+
+    // Delete ID card images from Cloudinary if they exist
+    if (eventManager.idCard?.frontImage) {
+      try {
+        const urlParts = eventManager.idCard.frontImage.split('/');
+        const publicIdWithExtension = urlParts.slice(-2).join('/');
+        const publicId = publicIdWithExtension.split('.')[0];
+        await deleteFromCloudinary(publicId);
+      } catch (err) {
+        console.error('Error deleting front ID card image:', err);
+      }
+    }
+
+    if (eventManager.idCard?.backImage) {
+      try {
+        const urlParts = eventManager.idCard.backImage.split('/');
+        const publicIdWithExtension = urlParts.slice(-2).join('/');
+        const publicId = publicIdWithExtension.split('.')[0];
+        await deleteFromCloudinary(publicId);
+      } catch (err) {
+        console.error('Error deleting back ID card image:', err);
+      }
+    }
+
+    // Delete profile picture from Cloudinary if exists
+    const user = await User.findById(userId);
+    if (user?.profilePicture) {
+      try {
+        const urlParts = user.profilePicture.split('/');
+        const publicIdWithExtension = urlParts.slice(-2).join('/');
+        const publicId = publicIdWithExtension.split('.')[0];
+        await deleteFromCloudinary(publicId);
+      } catch (err) {
+        console.error('Error deleting profile picture:', err);
+      }
+    }
+
+    // Delete the event manager profile
+    await EventManager.findByIdAndDelete(id);
+
+    // Delete the user account
+    await User.findByIdAndDelete(userId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Event manager account deleted permanently'
+    });
+
+  } catch (error) {
+    console.error('Delete event manager error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while deleting event manager',
       error: error.message
     });
   }

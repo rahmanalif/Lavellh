@@ -188,6 +188,56 @@ router.delete(
   adminController.deleteBusinessOwner
 );
 
+// ============ EVENT MANAGER MANAGEMENT ============
+
+/**
+ * @route   GET /api/admin/event-managers
+ * @desc    Get all event managers with search and pagination
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/event-managers',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getAllEventManagers
+);
+
+/**
+ * @route   GET /api/admin/event-managers/:id
+ * @desc    Get event manager details
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/event-managers/:id',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getEventManagerDetails
+);
+
+/**
+ * @route   PUT /api/admin/event-managers/:id/toggle-status
+ * @desc    Block/Unblock event manager
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.put(
+  '/event-managers/:id/toggle-status',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.toggleEventManagerStatus
+);
+
+/**
+ * @route   DELETE /api/admin/event-managers/:id
+ * @desc    Delete event manager account permanently
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.delete(
+  '/event-managers/:id',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.deleteEventManager
+);
+
 // ============ ADMIN MANAGEMENT (Super-Admin Only) ============
 
 /**

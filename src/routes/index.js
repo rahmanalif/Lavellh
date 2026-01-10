@@ -15,6 +15,7 @@ const wishlistRoutes = require('./wishlist.routes');
 const providerBookingRoutes = require('./provider.booking.routes');
 const providerAppointmentRoutes = require('./provider.appointment.routes');
 const businessOwnerRoutes = require('./businessOwner.routes');
+const eventManagerRoutes = require('./eventManager.routes');
 const homeRoutes = require('./home.routes');
 const userRoutes = require('./user.routes');
 
@@ -56,6 +57,9 @@ router.use('/wishlist', wishlistRoutes);
 
 // Use business owner routes
 router.use('/business-owners', businessOwnerRoutes);
+
+// Use event manager routes
+router.use('/event-managers', eventManagerRoutes);
 
 // Use home routes (public)
 router.use('/home', homeRoutes);
