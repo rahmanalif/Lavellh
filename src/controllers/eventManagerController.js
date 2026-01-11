@@ -5,6 +5,7 @@ const { getTokenExpiresIn } = require('../utility/jwt');
 const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const crypto = require('crypto');
+const { sendOTPEmail } = require('../utility/emailService');
 
 /**
  * Register a new event manager
@@ -616,6 +617,272 @@ exports.updateEventManagerProfile = async (req, res) => {
       success: false,
       message: 'An error occurred while updating event manager profile',
       error: error.message
+    });
+  }
+};
+
+/**
+ * Forgot password - Send OTP to email
+ * POST /api/event-managers/forgot-password
+ */
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // Validate email
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    // Find event manager user by email
+    const user = await User.findOne({
+      email: email.toLowerCase(),
+      userType: 'eventManager'
+    });
+
+    if (!user) {
+      // For security, don't reveal if user exists or not
+      return res.status(200).json({
+        success: true,
+        message: 'If an event manager account exists with this email, you will receive an OTP shortly.'
+      });
+    }
+
+    // Check if event manager profile exists
+    const eventManager = await EventManager.findOne({ userId: user._id });
+    if (!eventManager) {
+      return res.status(200).json({
+        success: true,
+        message: 'If an event manager account exists with this email, you will receive an OTP shortly.'
+      });
+    }
+
+    // Check if account is active
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Your account has been deactivated. Please contact support.'
+      });
+    }
+
+    // Generate OTP
+    const otp = user.generatePasswordResetOTP();
+    await user.save({ validateBeforeSave: false });
+
+    // Send OTP via email
+    try {
+      await sendOTPEmail(user.email, otp, user.fullName);
+      console.log(`Password reset OTP sent to event manager email: ${user.email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'OTP has been sent to your email. Please check and enter the code.',
+        data: {
+          email: user.email,
+          expiresIn: '10 minutes'
+        }
+      });
+    } catch (sendError) {
+      // Clear the OTP if sending failed
+      user.resetPasswordOTP = undefined;
+      user.resetPasswordOTPExpires = undefined;
+      await user.save({ validateBeforeSave: false });
+
+      console.error('Error sending OTP:', sendError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send OTP. Please try again later.',
+        error: process.env.NODE_ENV === 'development' ? sendError.message : undefined
+      });
+    }
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while processing your request',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Verify OTP
+ * POST /api/event-managers/verify-otp
+ */
+exports.verifyOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    // Validate inputs
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    if (!otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP is required'
+      });
+    }
+
+    // Validate OTP format (6 digits)
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP must be a 6-digit number'
+      });
+    }
+
+    // Find event manager user with OTP fields
+    const user = await User.findOne({
+      email: email.toLowerCase(),
+      userType: 'eventManager'
+    }).select('+resetPasswordOTP +resetPasswordOTPExpires');
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request'
+      });
+    }
+
+    // Verify event manager profile exists
+    const eventManager = await EventManager.findOne({ userId: user._id });
+    if (!eventManager) {
+      return res.status(400).json({
+        success: false,
+        message: 'Event manager profile not found'
+      });
+    }
+
+    // Verify OTP
+    const isValid = user.verifyPasswordResetOTP(otp);
+
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired OTP. Please request a new one.'
+      });
+    }
+
+    // OTP is valid
+    res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully. You can now reset your password.',
+      data: {
+        email: user.email
+      }
+    });
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while verifying OTP',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Reset password with OTP
+ * POST /api/event-managers/reset-password
+ */
+exports.resetPasswordWithOTP = async (req, res) => {
+  try {
+    const { email, otp, newPassword, confirmPassword } = req.body;
+
+    // Validate inputs
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    if (!otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP is required'
+      });
+    }
+
+    if (!newPassword || !confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password and confirm password are required'
+      });
+    }
+
+    // Validate passwords match
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password and confirm password do not match'
+      });
+    }
+
+    // Validate password length
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters long'
+      });
+    }
+
+    // Find event manager user with OTP fields and password
+    const user = await User.findOne({
+      email: email.toLowerCase(),
+      userType: 'eventManager'
+    }).select('+resetPasswordOTP +resetPasswordOTPExpires +password');
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request'
+      });
+    }
+
+    // Verify event manager profile exists
+    const eventManager = await EventManager.findOne({ userId: user._id });
+    if (!eventManager) {
+      return res.status(400).json({
+        success: false,
+        message: 'Event manager profile not found'
+      });
+    }
+
+    // Verify OTP
+    const isValid = user.verifyPasswordResetOTP(otp);
+
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired OTP. Please request a new one.'
+      });
+    }
+
+    // Update password and clear OTP
+    user.password = newPassword;
+    user.resetPasswordOTP = undefined;
+    user.resetPasswordOTPExpires = undefined;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Password has been reset successfully. You can now login with your new password.'
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while resetting password',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

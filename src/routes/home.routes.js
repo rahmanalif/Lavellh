@@ -27,4 +27,20 @@ router.get('/provider/:providerId', auth, homeController.getProviderDetails);
 // GET /api/home/all-providers
 router.get('/all-providers', auth, homeController.getAllProviders);
 
+/**
+ * Event discovery routes
+ */
+
+// Get popular events sorted by tickets sold
+// GET /api/home/popular-events?limit=20&eventType=Concert/Music Show
+router.get('/popular-events', auth, homeController.getPopularEvents);
+
+// Get event categories with counts
+// GET /api/home/event-categories
+router.get('/event-categories', auth, homeController.getEventCategories);
+
+// Get event details
+// GET /api/home/event/:eventId
+router.get('/event/:eventId', auth, homeController.getEventDetails);
+
 module.exports = router;

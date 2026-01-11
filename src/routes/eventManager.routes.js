@@ -24,6 +24,29 @@ router.post(
  */
 router.post('/login', eventManagerController.loginEventManager);
 
+// ============ PASSWORD RESET ROUTES ============
+
+/**
+ * @route   POST /api/event-managers/forgot-password
+ * @desc    Request password reset - Send OTP to email
+ * @access  Public
+ */
+router.post('/forgot-password', eventManagerController.forgotPassword);
+
+/**
+ * @route   POST /api/event-managers/verify-otp
+ * @desc    Verify OTP code
+ * @access  Public
+ */
+router.post('/verify-otp', eventManagerController.verifyOTP);
+
+/**
+ * @route   POST /api/event-managers/reset-password
+ * @desc    Reset password with OTP verification
+ * @access  Public
+ */
+router.post('/reset-password', eventManagerController.resetPasswordWithOTP);
+
 /**
  * @route   GET /api/event-managers/me
  * @desc    Get current event manager profile

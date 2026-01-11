@@ -23,6 +23,29 @@ router.post(
  */
 router.post('/login', businessOwnerController.loginBusinessOwner);
 
+// ============ PASSWORD RESET ROUTES ============
+
+/**
+ * @route   POST /api/business-owners/forgot-password
+ * @desc    Request password reset - Send OTP to email
+ * @access  Public
+ */
+router.post('/forgot-password', businessOwnerController.forgotPassword);
+
+/**
+ * @route   POST /api/business-owners/verify-otp
+ * @desc    Verify OTP code
+ * @access  Public
+ */
+router.post('/verify-otp', businessOwnerController.verifyOTP);
+
+/**
+ * @route   POST /api/business-owners/reset-password
+ * @desc    Reset password with OTP verification
+ * @access  Public
+ */
+router.post('/reset-password', businessOwnerController.resetPasswordWithOTP);
+
 /**
  * @route   GET /api/business-owners/me
  * @desc    Get current business owner profile

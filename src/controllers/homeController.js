@@ -2,6 +2,7 @@ const Provider = require('../models/Provider');
 const Service = require('../models/Service');
 const Review = require('../models/Review');
 const User = require('../models/User');
+const Event = require('../models/Event');
 
 /**
  * Get featured providers for home page
@@ -596,6 +597,192 @@ exports.getAllProviders = async (req, res) => {
       success: false,
       message: 'An error occurred while fetching providers',
       error: error.message
+    });
+  }
+};
+
+// ===========================
+// EVENT DISCOVERY FUNCTIONS
+// ===========================
+
+/**
+ * Helper function to format event date for display
+ */
+function formatEventDate(dateTime) {
+  const options = { year: 'numeric', month: 'long', day: 'numeric' };
+  return new Date(dateTime).toLocaleDateString('en-US', options);
+}
+
+/**
+ * Helper function to format event time range for display
+ */
+function formatEventTime(startDateTime, endDateTime) {
+  const options = { hour: 'numeric', minute: '2-digit', hour12: true };
+  const start = new Date(startDateTime).toLocaleTimeString('en-US', options);
+  const end = new Date(endDateTime).toLocaleTimeString('en-US', options);
+  return `${start} - ${end}`;
+}
+
+/**
+ * Helper function to format events for display
+ */
+function formatEventsForDisplay(events) {
+  return events.map(event => ({
+    eventId: event._id,
+    eventName: event.eventName,
+    eventImage: event.eventImage,
+    eventType: event.eventType,
+    eventLocation: event.eventLocation,
+    eventStartDateTime: event.eventStartDateTime,
+    eventEndDateTime: event.eventEndDateTime,
+    ticketPrice: event.ticketPrice,
+    ticketsAvailable: event.ticketsAvailable,
+    ticketsSold: event.ticketsSold,
+    eventManagerName: event.eventManagerName,
+    formattedDate: formatEventDate(event.eventStartDateTime),
+    formattedTime: formatEventTime(event.eventStartDateTime, event.eventEndDateTime)
+  }));
+}
+
+/**
+ * Get popular events sorted by tickets sold
+ * GET /api/home/popular-events
+ * Query params:
+ *   - limit: Number of events to return (optional, default: 20, max: 100)
+ *   - eventType: Filter by event type (optional)
+ */
+exports.getPopularEvents = async (req, res) => {
+  try {
+    const { limit = 20, eventType } = req.query;
+
+    const events = await Event.getAvailableEvents({
+      eventType,
+      limit: Math.min(parseInt(limit), 100),
+      sortBy: 'ticketsSold'
+    });
+
+    // Filter out sold-out events (isSoldOut is a virtual property)
+    const availableEvents = events.filter(event => !event.isSoldOut);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        events: formatEventsForDisplay(availableEvents),
+        count: availableEvents.length
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching popular events:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch events'
+    });
+  }
+};
+
+/**
+ * Get event categories with counts
+ * GET /api/home/event-categories
+ */
+exports.getEventCategories = async (req, res) => {
+  try {
+    const eventTypes = [
+      'Concert/Music Show',
+      'Cultural Program',
+      'Seminar/Conference',
+      'Sports Event',
+      'Festival/Fair'
+    ];
+
+    const now = new Date();
+
+    const categoriesWithCount = await Promise.all(
+      eventTypes.map(async (type) => {
+        const count = await Event.countDocuments({
+          eventType: type,
+          status: 'published',
+          ticketSalesStartDate: { $lte: now },
+          ticketSalesEndDate: { $gte: now },
+          eventStartDateTime: { $gt: now }
+        });
+
+        return {
+          eventType: type,
+          displayName: type,
+          availableEventCount: count
+        };
+      })
+    );
+
+    res.status(200).json({
+      success: true,
+      data: {
+        categories: categoriesWithCount.filter(cat => cat.availableEventCount > 0)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching event categories:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch categories'
+    });
+  }
+};
+
+/**
+ * Get event details
+ * GET /api/home/event/:eventId
+ */
+exports.getEventDetails = async (req, res) => {
+  try {
+    const { eventId } = req.params;
+
+    const event = await Event.findById(eventId);
+
+    if (!event) {
+      return res.status(404).json({
+        success: false,
+        message: 'Event not found'
+      });
+    }
+
+    const now = new Date();
+    const isAvailableForPurchase =
+      event.status === 'published' &&
+      now >= event.ticketSalesStartDate &&
+      now <= event.ticketSalesEndDate &&
+      !event.isSoldOut &&
+      event.eventStartDateTime > now;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        event: {
+          eventId: event._id,
+          eventName: event.eventName,
+          eventImage: event.eventImage,
+          eventType: event.eventType,
+          eventDescription: event.eventDescription,
+          eventLocation: event.eventLocation,
+          eventManagerName: event.eventManagerName,
+          eventStartDateTime: event.eventStartDateTime,
+          eventEndDateTime: event.eventEndDateTime,
+          ticketPrice: event.ticketPrice,
+          ticketsAvailable: event.ticketsAvailable,
+          ticketsSold: event.ticketsSold,
+          maximumNumberOfTickets: event.maximumNumberOfTickets,
+          isAvailableForPurchase,
+          isSoldOut: event.isSoldOut,
+          formattedDate: formatEventDate(event.eventStartDateTime),
+          formattedTime: formatEventTime(event.eventStartDateTime, event.eventEndDateTime)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching event details:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch event details'
     });
   }
 };

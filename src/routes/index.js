@@ -18,6 +18,7 @@ const businessOwnerRoutes = require('./businessOwner.routes');
 const eventManagerRoutes = require('./eventManager.routes');
 const homeRoutes = require('./home.routes');
 const userRoutes = require('./user.routes');
+const employeeRoutes = require('./employee.routes');
 
 // Use auth routes
 router.use('/auth', authRoutes);
@@ -57,6 +58,9 @@ router.use('/wishlist', wishlistRoutes);
 
 // Use business owner routes
 router.use('/business-owners', businessOwnerRoutes);
+
+// Use employee routes (nested under business-owners)
+router.use('/business-owners/employees', employeeRoutes);
 
 // Use event manager routes
 router.use('/event-managers', eventManagerRoutes);

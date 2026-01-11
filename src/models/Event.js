@@ -174,6 +174,25 @@ eventSchema.index({ eventStartDateTime: 1 });
 eventSchema.index({ status: 1 });
 eventSchema.index({ confirmationCodePrefix: 1 });
 
+// Compound indexes for homepage event queries
+eventSchema.index({
+  status: 1,
+  ticketSalesStartDate: 1,
+  ticketSalesEndDate: 1,
+  eventStartDateTime: 1
+});
+
+eventSchema.index({
+  status: 1,
+  ticketsSold: -1
+});
+
+eventSchema.index({
+  status: 1,
+  eventType: 1,
+  ticketsSold: -1
+});
+
 // Virtual to check if tickets are available
 eventSchema.virtual('ticketsAvailable').get(function() {
   return this.maximumNumberOfTickets - this.ticketsSold;
@@ -268,6 +287,32 @@ eventSchema.statics.getUpcomingEvents = function(limit = 10) {
 eventSchema.statics.getEventsByManager = function(eventManagerId) {
   return this.find({ eventManagerId })
     .sort({ createdAt: -1 });
+};
+
+// Static method to get available events for homepage
+eventSchema.statics.getAvailableEvents = function(options = {}) {
+  const { eventType, limit = 20, sortBy = 'ticketsSold' } = options;
+  const now = new Date();
+
+  const query = {
+    status: 'published',
+    ticketSalesStartDate: { $lte: now },
+    ticketSalesEndDate: { $gte: now },
+    eventStartDateTime: { $gt: now }
+  };
+
+  if (eventType) {
+    query.eventType = eventType;
+  }
+
+  const sortOptions = {
+    ticketsSold: { ticketsSold: -1 },
+    date: { eventStartDateTime: 1 }
+  };
+
+  return this.find(query)
+    .sort(sortOptions[sortBy] || sortOptions.ticketsSold)
+    .limit(limit);
 };
 
 module.exports = mongoose.model('Event', eventSchema);

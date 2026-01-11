@@ -109,6 +109,9 @@ const uploadCategoryIcon = generalUpload.single('icon');
 // Middleware for single event image upload
 const uploadEventImage = generalUpload.single('eventImage');
 
+// Middleware for employee service photo upload
+const uploadEmployeeServicePhoto = generalUpload.single('servicePhoto');
+
 // Error handler middleware for multer
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
@@ -148,5 +151,6 @@ module.exports = {
   uploadPortfolioImages,
   uploadCategoryIcon,
   uploadEventImage,
+  uploadEmployeeServicePhoto,
   handleUploadError
 };
