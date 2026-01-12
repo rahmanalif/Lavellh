@@ -85,6 +85,12 @@ const uploadBusinessOwnerFiles = idCardUpload.fields([
   { name: 'businessPhoto', maxCount: 1 }
 ]);
 
+// Middleware for business profile update (cover photo + multiple business photos)
+const uploadBusinessProfileFiles = generalUpload.fields([
+  { name: 'coverPhoto', maxCount: 1 },
+  { name: 'businessPhotos', maxCount: 10 } // Allow up to 10 business photos
+]);
+
 // Middleware for event manager registration (ID cards only)
 const uploadEventManagerFiles = idCardUpload.fields([
   { name: 'idCardFront', maxCount: 1 },
@@ -152,5 +158,6 @@ module.exports = {
   uploadCategoryIcon,
   uploadEventImage,
   uploadEmployeeServicePhoto,
+  uploadBusinessProfileFiles,
   handleUploadError
 };

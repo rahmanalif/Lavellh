@@ -47,6 +47,36 @@ const businessOwnerSchema = new mongoose.Schema({
     default: null
   },
 
+  // Business Profile fields (separate from personal profile)
+  businessProfile: {
+    coverPhoto: {
+      type: String, // Cloudinary URL for business cover photo
+      default: null
+    },
+    name: {
+      type: String, // Can be different from businessName
+      trim: true,
+      maxlength: [100, 'Business profile name cannot exceed 100 characters']
+    },
+    categories: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Category'
+    }],
+    location: {
+      type: String,
+      trim: true,
+      maxlength: [200, 'Business location cannot exceed 200 characters']
+    },
+    about: {
+      type: String,
+      trim: true,
+      maxlength: [1000, 'About section cannot exceed 1000 characters']
+    },
+    photos: [{
+      type: String // Array of Cloudinary URLs for business photos
+    }]
+  },
+
   // ID Card Information
   idCard: {
     frontImage: {

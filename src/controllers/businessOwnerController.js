@@ -892,3 +892,350 @@ exports.resetPasswordWithOTP = async (req, res) => {
   }
 };
 
+
+/**
+ * Get business profile
+ * GET /api/business-owners/business-profile
+ */
+exports.getBusinessProfile = async (req, res) => {
+  try {
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id })
+      .populate('businessProfile.categories', 'name slug icon');
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    // Check if business profile has been created
+    const hasProfile = businessOwner.businessProfile && 
+                      (businessOwner.businessProfile.name || 
+                       businessOwner.businessProfile.categories?.length > 0 ||
+                       businessOwner.businessProfile.location ||
+                       businessOwner.businessProfile.about);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        businessProfile: businessOwner.businessProfile || null,
+        hasProfile: hasProfile
+      }
+    });
+  } catch (error) {
+    console.error('Get business profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching business profile',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Create business profile (First time setup)
+ * POST /api/business-owners/business-profile
+ */
+exports.createBusinessProfile = async (req, res) => {
+  try {
+    const { name, categories, location, about } = req.body;
+
+    // Validate required fields
+    if (!name || !categories || !location) {
+      return res.status(400).json({
+        success: false,
+        message: 'Business name, categories, and location are required'
+      });
+    }
+
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    // Check if business profile already exists
+    if (businessOwner.businessProfile && 
+        (businessOwner.businessProfile.name || 
+         businessOwner.businessProfile.categories?.length > 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Business profile already exists. Use PUT method to update.'
+      });
+    }
+
+    // Parse categories if it's a string (from form-data)
+    const parsedCategories = typeof categories === 'string' 
+      ? JSON.parse(categories) 
+      : categories;
+
+    // Validate categories array
+    if (!Array.isArray(parsedCategories) || parsedCategories.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one category is required'
+      });
+    }
+
+    // Initialize business profile
+    businessOwner.businessProfile = {
+      name: name,
+      categories: parsedCategories,
+      location: location,
+      about: about || '',
+      photos: []
+    };
+
+    // Handle cover photo upload
+    if (req.files?.coverPhoto) {
+      const coverPhotoPath = req.files.coverPhoto[0].path;
+      
+      try {
+        const coverPhotoResult = await uploadToCloudinary(coverPhotoPath, 'business-profiles/covers');
+        if (coverPhotoResult.success) {
+          businessOwner.businessProfile.coverPhoto = coverPhotoResult.url;
+        }
+      } catch (uploadError) {
+        console.error('Cover photo upload error:', uploadError);
+      } finally {
+        // Clean up local file
+        await fs.unlink(coverPhotoPath).catch(() => {});
+      }
+    }
+
+    // Handle business photos upload (multiple)
+    if (req.files?.businessPhotos) {
+      const uploadedPhotos = [];
+      
+      for (const file of req.files.businessPhotos) {
+        try {
+          const photoResult = await uploadToCloudinary(file.path, 'business-profiles/photos');
+          if (photoResult.success) {
+            uploadedPhotos.push(photoResult.url);
+          }
+        } catch (uploadError) {
+          console.error('Business photo upload error:', uploadError);
+        } finally {
+          // Clean up local file
+          await fs.unlink(file.path).catch(() => {});
+        }
+      }
+
+      businessOwner.businessProfile.photos = uploadedPhotos;
+    }
+
+    await businessOwner.save();
+
+    // Populate categories for response
+    await businessOwner.populate('businessProfile.categories', 'name slug icon');
+
+    res.status(201).json({
+      success: true,
+      message: 'Business profile created successfully',
+      data: {
+        businessProfile: businessOwner.businessProfile
+      }
+    });
+  } catch (error) {
+    console.error('Create business profile error:', error);
+    
+    // Clean up uploaded files on error
+    if (req.files?.coverPhoto) {
+      await fs.unlink(req.files.coverPhoto[0].path).catch(() => {});
+    }
+    if (req.files?.businessPhotos) {
+      for (const file of req.files.businessPhotos) {
+        await fs.unlink(file.path).catch(() => {});
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while creating business profile',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Update business profile
+ * PUT /api/business-owners/business-profile
+ */
+exports.updateBusinessProfile = async (req, res) => {
+  try {
+    const { name, categories, location, about } = req.body;
+
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    // Check if business profile exists
+    if (!businessOwner.businessProfile || 
+        (!businessOwner.businessProfile.name && 
+         !businessOwner.businessProfile.categories?.length)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Business profile does not exist. Use POST method to create it first.'
+      });
+    }
+
+    // Handle cover photo upload
+    if (req.files?.coverPhoto) {
+      const coverPhotoPath = req.files.coverPhoto[0].path;
+      
+      // Delete old cover photo if exists
+      if (businessOwner.businessProfile.coverPhoto) {
+        await deleteFromCloudinary(businessOwner.businessProfile.coverPhoto).catch(() => {});
+      }
+
+      // Upload new cover photo
+      const coverPhotoResult = await uploadToCloudinary(coverPhotoPath, 'business-profiles/covers');
+      if (coverPhotoResult.success) {
+        businessOwner.businessProfile.coverPhoto = coverPhotoResult.url;
+      }
+
+      // Clean up local file
+      await fs.unlink(coverPhotoPath).catch(() => {});
+    }
+
+    // Handle business photos upload (multiple)
+    if (req.files?.businessPhotos) {
+      const uploadedPhotos = [];
+      
+      for (const file of req.files.businessPhotos) {
+        const photoResult = await uploadToCloudinary(file.path, 'business-profiles/photos');
+        if (photoResult.success) {
+          uploadedPhotos.push(photoResult.url);
+        }
+        
+        // Clean up local file
+        await fs.unlink(file.path).catch(() => {});
+      }
+
+      // Add new photos to existing array
+      if (!businessOwner.businessProfile.photos) {
+        businessOwner.businessProfile.photos = [];
+      }
+      businessOwner.businessProfile.photos.push(...uploadedPhotos);
+    }
+
+    // Update text fields
+    if (name !== undefined) {
+      businessOwner.businessProfile.name = name;
+    }
+
+    if (categories !== undefined) {
+      // Parse categories if it's a string (from form-data)
+      const parsedCategories = typeof categories === 'string' 
+        ? JSON.parse(categories) 
+        : categories;
+      
+      businessOwner.businessProfile.categories = parsedCategories;
+    }
+
+    if (location !== undefined) {
+      businessOwner.businessProfile.location = location;
+    }
+
+    if (about !== undefined) {
+      businessOwner.businessProfile.about = about;
+    }
+
+    await businessOwner.save();
+
+    // Populate categories for response
+    await businessOwner.populate('businessProfile.categories', 'name slug icon');
+
+    res.status(200).json({
+      success: true,
+      message: 'Business profile updated successfully',
+      data: {
+        businessProfile: businessOwner.businessProfile
+      }
+    });
+  } catch (error) {
+    console.error('Update business profile error:', error);
+    
+    // Clean up uploaded files on error
+    if (req.files?.coverPhoto) {
+      await fs.unlink(req.files.coverPhoto[0].path).catch(() => {});
+    }
+    if (req.files?.businessPhotos) {
+      for (const file of req.files.businessPhotos) {
+        await fs.unlink(file.path).catch(() => {});
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating business profile',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Delete business profile photo
+ * DELETE /api/business-owners/business-profile/photos/:photoIndex
+ */
+exports.deleteBusinessProfilePhoto = async (req, res) => {
+  try {
+    const { photoIndex } = req.params;
+
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    if (!businessOwner.businessProfile?.photos || businessOwner.businessProfile.photos.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No business photos found'
+      });
+    }
+
+    const index = parseInt(photoIndex);
+    if (isNaN(index) || index < 0 || index >= businessOwner.businessProfile.photos.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid photo index'
+      });
+    }
+
+    // Delete photo from Cloudinary
+    const photoUrl = businessOwner.businessProfile.photos[index];
+    await deleteFromCloudinary(photoUrl).catch(() => {});
+
+    // Remove photo from array
+    businessOwner.businessProfile.photos.splice(index, 1);
+    await businessOwner.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Business photo deleted successfully',
+      data: {
+        photos: businessOwner.businessProfile.photos
+      }
+    });
+  } catch (error) {
+    console.error('Delete business profile photo error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while deleting business photo',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
