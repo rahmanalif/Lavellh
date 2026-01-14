@@ -585,6 +585,12 @@ exports.getAvailableSlots = async (req, res) => {
       appointmentStatus: { $in: ['pending', 'confirmed'] }
     }).select('timeSlot');
 
+    const bookedSlots = appointments.map(apt => apt.timeSlot);
+    const bookedSlotSet = new Set(bookedSlots);
+    const availableSlots = (service.appointmentSlots || []).filter(
+      slot => !bookedSlotSet.has(slot)
+    );
+
     res.status(200).json({
       success: true,
       data: {
@@ -593,7 +599,8 @@ exports.getAvailableSlots = async (req, res) => {
           name: service.headline,
           appointmentSlots: service.appointmentSlots
         },
-        bookedSlots: appointments.map(apt => apt.timeSlot),
+        bookedSlots,
+        availableSlots,
         date: date
       }
     });

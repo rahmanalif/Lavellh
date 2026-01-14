@@ -13,6 +13,11 @@ const {
   getRecentProviders
 } = require('../controllers/authController');
 const { requestPasswordReset, verifyOTP, resetPassword } = require('../controllers/passwordResetController');
+const {
+  requestRegistrationOTP,
+  verifyRegistrationOTP,
+  completeRegistration
+} = require('../controllers/registrationOTPController');
 const auth = require('../middleware/auth');
 const { uploadProfilePicture, handleUploadError } = require('../middleware/upload');
 
@@ -21,6 +26,11 @@ router.post('/register', register);
 router.post('/login', login);
 router.post('/refresh-token', refreshAccessToken);
 router.post('/logout', logout);
+
+// Public routes - Registration OTP
+router.post('/register/request-otp', requestRegistrationOTP);
+router.post('/register/verify-otp', verifyRegistrationOTP);
+router.post('/register/complete', completeRegistration);
 
 // Public routes - Password Reset
 router.post('/forgot-password', requestPasswordReset);

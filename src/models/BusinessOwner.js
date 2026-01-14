@@ -101,6 +101,52 @@ const businessOwnerSchema = new mongoose.Schema({
     type: String,
     trim: true,
     sparse: true // Allow null but unique when present
+  },
+
+  // Bank Information
+  bankInformation: {
+    accountHolderName: {
+      type: String,
+      trim: true,
+      maxlength: [100, 'Account holder name cannot exceed 100 characters']
+    },
+    bankName: {
+      type: String,
+      trim: true,
+      maxlength: [100, 'Bank name cannot exceed 100 characters']
+    },
+    accountNumber: {
+      type: String,
+      trim: true,
+      maxlength: [50, 'Account number cannot exceed 50 characters']
+    },
+    routingNumber: {
+      type: String,
+      trim: true,
+      maxlength: [50, 'Routing number cannot exceed 50 characters']
+    },
+    swiftCode: {
+      type: String,
+      trim: true,
+      maxlength: [20, 'SWIFT code cannot exceed 20 characters']
+    },
+    iban: {
+      type: String,
+      trim: true,
+      maxlength: [50, 'IBAN cannot exceed 50 characters']
+    },
+    bankAddress: {
+      street: String,
+      city: String,
+      state: String,
+      zipCode: String,
+      country: String
+    },
+    bankVerificationDocument: {
+      type: String, // Cloudinary URL for bank verification document
+      required: false,
+      default: null
+    }
   }
 }, {
   timestamps: true

@@ -84,6 +84,10 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  isPendingVerification: {
+    type: Boolean,
+    default: false
+  },
   resetPasswordOTP: {
     type: String,
     select: false // Don't include in queries by default
@@ -91,6 +95,14 @@ const userSchema = new mongoose.Schema({
   resetPasswordOTPExpires: {
     type: Date,
     select: false // Don't include in queries by default
+  },
+  resetPasswordToken: {
+    type: String,
+    select: false
+  },
+  resetPasswordTokenExpires: {
+    type: Date,
+    select: false
   },
   location: {
     type: {
@@ -129,6 +141,11 @@ userSchema.pre('save', async function(next) {
   if (this.authProvider !== 'local' || !this.isModified('password')) return next();
 
   try {
+    const bcryptPattern = /^\$2[aby]\$\d{2}\$/;
+    if (bcryptPattern.test(this.password) && this.password.length >= 55) {
+      return next();
+    }
+
     const salt = await bcrypt.genSalt(12);
     this.password = await bcrypt.hash(this.password, salt);
     next();
@@ -148,6 +165,8 @@ userSchema.methods.toJSON = function() {
   delete user.password;
   delete user.resetPasswordOTP;
   delete user.resetPasswordOTPExpires;
+  delete user.resetPasswordToken;
+  delete user.resetPasswordTokenExpires;
   return user;
 };
 

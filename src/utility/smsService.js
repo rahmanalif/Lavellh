@@ -36,6 +36,30 @@ const sendOTPSMS = async (phoneNumber, otp, userName) => {
   }
 };
 
+// Send registration OTP via SMS
+const sendRegistrationOTPSMS = async (phoneNumber, otp, userName) => {
+  try {
+    const client = getTwilioClient();
+    const fromNumber = process.env.TWILIO_PHONE_NUMBER;
+
+    if (!fromNumber) {
+      throw new Error('Twilio phone number not configured');
+    }
+
+    const message = await client.messages.create({
+      body: `Hello ${userName},\n\nYour ${process.env.APP_NAME || 'Lavellh'} registration OTP is: ${otp}\n\nThis code will expire in 10 minutes.\n\nIf you didn't request this, please ignore this message.`,
+      from: fromNumber,
+      to: phoneNumber
+    });
+
+    console.log('Registration SMS sent successfully:', message.sid);
+    return { success: true, messageSid: message.sid };
+  } catch (error) {
+    console.error('Error sending registration SMS:', error);
+    throw new Error(`Failed to send SMS: ${error.message}`);
+  }
+};
+
 // Send verification SMS (optional, for future use)
 const sendVerificationSMS = async (phoneNumber, verificationCode) => {
   try {
@@ -79,6 +103,7 @@ const sendWelcomeSMS = async (phoneNumber, userName) => {
 
 module.exports = {
   sendOTPSMS,
+  sendRegistrationOTPSMS,
   sendVerificationSMS,
   sendWelcomeSMS
 };

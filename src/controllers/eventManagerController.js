@@ -372,6 +372,66 @@ exports.loginEventManager = async (req, res) => {
 };
 
 /**
+ * Logout event manager
+ * POST /api/event-managers/logout
+ */
+exports.logout = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const storedToken = await RefreshToken.findOne({ token: hashedToken });
+
+    if (storedToken) {
+      storedToken.isRevoked = true;
+      await storedToken.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    console.error('Event manager logout error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Logout event manager from all devices
+ * POST /api/event-managers/logout-all
+ */
+exports.logoutAll = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    await RefreshToken.revokeAllForUser(userId);
+
+    res.json({
+      success: true,
+      message: 'Logged out from all devices successfully'
+    });
+  } catch (error) {
+    console.error('Event manager logout all error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout',
+      error: error.message
+    });
+  }
+};
+
+/**
  * Get event manager profile
  * GET /api/event-managers/me
  */

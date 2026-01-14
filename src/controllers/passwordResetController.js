@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const { sendOTPEmail } = require('../utility/emailService');
 const { sendOTPSMS } = require('../utility/smsService');
+const crypto = require('crypto');
 
 // Request password reset - Send OTP
 const requestPasswordReset = async (req, res) => {
@@ -131,11 +132,22 @@ const verifyOTP = async (req, res) => {
     }
 
     // OTP is valid, return success
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    user.resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+    user.resetPasswordTokenExpires = Date.now() + 10 * 60 * 1000;
+    user.resetPasswordOTP = undefined;
+    user.resetPasswordOTPExpires = undefined;
+    await user.save({ validateBeforeSave: false });
+
     res.status(200).json({
       success: true,
       message: 'OTP verified successfully. You can now reset your password.',
       data: {
-        identifier: email || phoneNumber
+        resetToken,
+        expiresIn: '10 minutes'
       }
     });
   } catch (error) {
@@ -151,20 +163,12 @@ const verifyOTP = async (req, res) => {
 // Reset password with OTP
 const resetPassword = async (req, res) => {
   try {
-    const { email, phoneNumber, otp, newPassword } = req.body;
+    const { resetToken, newPassword } = req.body;
 
-    // Validate inputs
-    if (!email && !phoneNumber) {
+    if (!resetToken) {
       return res.status(400).json({
         success: false,
-        message: 'Email or phone number is required'
-      });
-    }
-
-    if (!otp) {
-      return res.status(400).json({
-        success: false,
-        message: 'OTP is required'
+        message: 'Reset token is required'
       });
     }
 
@@ -183,29 +187,26 @@ const resetPassword = async (req, res) => {
       });
     }
 
-    // Find user with OTP fields
-    const query = email ? { email } : { phoneNumber };
-    const user = await User.findOne(query)
-      .select('+resetPasswordOTP +resetPasswordOTPExpires +password');
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordTokenExpires: { $gt: Date.now() }
+    }).select('+resetPasswordToken +resetPasswordTokenExpires +password');
 
     if (!user) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid request'
+        message: 'Invalid or expired reset token. Please verify OTP again.'
       });
     }
 
-    // Verify OTP
-    const isValid = user.verifyPasswordResetOTP(otp);
-
-    if (!isValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid or expired OTP. Please request a new one.'
-      });
-    }
-    // Update password
     user.password = newPassword;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordTokenExpires = undefined;
     user.resetPasswordOTP = undefined;
     user.resetPasswordOTPExpires = undefined;
     await user.save();

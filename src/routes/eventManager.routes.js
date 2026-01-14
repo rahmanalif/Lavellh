@@ -24,6 +24,20 @@ router.post(
  */
 router.post('/login', eventManagerController.loginEventManager);
 
+/**
+ * @route   POST /api/event-managers/logout
+ * @desc    Logout event manager (revoke refresh token)
+ * @access  Public
+ */
+router.post('/logout', eventManagerController.logout);
+
+/**
+ * @route   POST /api/event-managers/logout-all
+ * @desc    Logout event manager from all devices
+ * @access  Private (Event Manager only)
+ */
+router.post('/logout-all', auth, eventManagerController.logoutAll);
+
 // ============ PASSWORD RESET ROUTES ============
 
 /**

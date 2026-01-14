@@ -372,6 +372,66 @@ exports.loginBusinessOwner = async (req, res) => {
 };
 
 /**
+ * Logout business owner
+ * POST /api/business-owners/logout
+ */
+exports.logout = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const storedToken = await RefreshToken.findOne({ token: hashedToken });
+
+    if (storedToken) {
+      storedToken.isRevoked = true;
+      await storedToken.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    console.error('Business owner logout error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Logout business owner from all devices
+ * POST /api/business-owners/logout-all
+ */
+exports.logoutAll = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    await RefreshToken.revokeAllForUser(userId);
+
+    res.json({
+      success: true,
+      message: 'Logged out from all devices successfully'
+    });
+  } catch (error) {
+    console.error('Business owner logout all error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout',
+      error: error.message
+    });
+  }
+};
+
+/**
  * Get business owner profile
  * GET /api/business-owners/me
  */
@@ -1235,6 +1295,279 @@ exports.deleteBusinessProfilePhoto = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while deleting business photo',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Get bank information
+ * GET /api/business-owners/bank-information
+ */
+exports.getBankInformation = async (req, res) => {
+  try {
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        bankInformation: businessOwner.bankInformation
+      }
+    });
+  } catch (error) {
+    console.error('Get bank information error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching bank information',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Save bank information
+ * POST /api/business-owners/bank-information
+ */
+exports.saveBankInformation = async (req, res) => {
+  try {
+    const {
+      accountHolderName,
+      bankName,
+      accountNumber,
+      routingNumber,
+      swiftCode,
+      iban,
+      bankAddress
+    } = req.body;
+
+    // Find the business owner
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    // Initialize bank information if it doesn't exist
+    if (!businessOwner.bankInformation) {
+      businessOwner.bankInformation = {};
+    }
+
+    // Update bank information fields
+    if (accountHolderName !== undefined) businessOwner.bankInformation.accountHolderName = accountHolderName;
+    if (bankName !== undefined) businessOwner.bankInformation.bankName = bankName;
+    if (accountNumber !== undefined) businessOwner.bankInformation.accountNumber = accountNumber;
+    if (routingNumber !== undefined) businessOwner.bankInformation.routingNumber = routingNumber;
+    if (swiftCode !== undefined) businessOwner.bankInformation.swiftCode = swiftCode;
+    if (iban !== undefined) businessOwner.bankInformation.iban = iban;
+    if (bankAddress !== undefined) businessOwner.bankInformation.bankAddress = bankAddress;
+
+    // Handle bank verification document upload
+    if (req.file) {
+      try {
+        // Upload new bank verification document to Cloudinary
+        const uploadResult = await uploadToCloudinary(req.file.path, 'bank-documents');
+
+        if (uploadResult.success) {
+          // Delete old bank verification document from Cloudinary if exists
+          if (businessOwner.bankInformation.bankVerificationDocument) {
+            // Extract public ID from URL
+            const urlParts = businessOwner.bankInformation.bankVerificationDocument.split('/');
+            const publicIdWithExtension = urlParts.slice(-2).join('/');
+            const publicId = publicIdWithExtension.split('.')[0];
+            await deleteFromCloudinary(publicId);
+          }
+
+          businessOwner.bankInformation.bankVerificationDocument = uploadResult.url;
+        }
+
+        // Delete local file after upload
+        await fs.unlink(req.file.path);
+      } catch (uploadError) {
+        console.error('Bank verification document upload error:', uploadError);
+        // Continue even if upload fails - don't block bank information update
+      }
+    }
+
+    await businessOwner.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Bank information saved successfully',
+      data: {
+        bankInformation: businessOwner.bankInformation
+      }
+    });
+  } catch (error) {
+    console.error('Save bank information error:', error);
+
+    // Clean up uploaded file if exists
+    if (req.file) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (unlinkError) {
+        console.error('Error deleting uploaded file:', unlinkError);
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while saving bank information',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Update bank information
+ * PUT /api/business-owners/bank-information
+ */
+exports.updateBankInformation = async (req, res) => {
+  try {
+    const {
+      accountHolderName,
+      bankName,
+      accountNumber,
+      routingNumber,
+      swiftCode,
+      iban,
+      bankAddress
+    } = req.body;
+
+    // Find the business owner
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    // Check if bank information exists
+    if (!businessOwner.bankInformation) {
+      return res.status(400).json({
+        success: false,
+        message: 'Bank information does not exist. Use POST method to create it first.'
+      });
+    }
+
+    // Update bank information fields
+    if (accountHolderName !== undefined) businessOwner.bankInformation.accountHolderName = accountHolderName;
+    if (bankName !== undefined) businessOwner.bankInformation.bankName = bankName;
+    if (accountNumber !== undefined) businessOwner.bankInformation.accountNumber = accountNumber;
+    if (routingNumber !== undefined) businessOwner.bankInformation.routingNumber = routingNumber;
+    if (swiftCode !== undefined) businessOwner.bankInformation.swiftCode = swiftCode;
+    if (iban !== undefined) businessOwner.bankInformation.iban = iban;
+    if (bankAddress !== undefined) businessOwner.bankInformation.bankAddress = bankAddress;
+
+    // Handle bank verification document upload
+    if (req.file) {
+      try {
+        // Upload new bank verification document to Cloudinary
+        const uploadResult = await uploadToCloudinary(req.file.path, 'bank-documents');
+
+        if (uploadResult.success) {
+          // Delete old bank verification document from Cloudinary if exists
+          if (businessOwner.bankInformation.bankVerificationDocument) {
+            // Extract public ID from URL
+            const urlParts = businessOwner.bankInformation.bankVerificationDocument.split('/');
+            const publicIdWithExtension = urlParts.slice(-2).join('/');
+            const publicId = publicIdWithExtension.split('.')[0];
+            await deleteFromCloudinary(publicId);
+          }
+
+          businessOwner.bankInformation.bankVerificationDocument = uploadResult.url;
+        }
+
+        // Delete local file after upload
+        await fs.unlink(req.file.path);
+      } catch (uploadError) {
+        console.error('Bank verification document upload error:', uploadError);
+        // Continue even if upload fails - don't block bank information update
+      }
+    }
+
+    await businessOwner.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Bank information updated successfully',
+      data: {
+        bankInformation: businessOwner.bankInformation
+      }
+    });
+  } catch (error) {
+    console.error('Update bank information error:', error);
+
+    // Clean up uploaded file if exists
+    if (req.file) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (unlinkError) {
+        console.error('Error deleting uploaded file:', unlinkError);
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating bank information',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Delete bank verification document
+ * DELETE /api/business-owners/bank-information/document
+ */
+exports.deleteBankVerificationDocument = async (req, res) => {
+  try {
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    if (!businessOwner.bankInformation?.bankVerificationDocument) {
+      return res.status(404).json({
+        success: false,
+        message: 'No bank verification document found'
+      });
+    }
+
+    // Delete document from Cloudinary
+    const documentUrl = businessOwner.bankInformation.bankVerificationDocument;
+    await deleteFromCloudinary(documentUrl).catch(() => {});
+
+    // Remove document URL from database
+    businessOwner.bankInformation.bankVerificationDocument = null;
+    await businessOwner.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Bank verification document deleted successfully',
+      data: {
+        bankInformation: businessOwner.bankInformation
+      }
+    });
+  } catch (error) {
+    console.error('Delete bank verification document error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while deleting bank verification document',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }

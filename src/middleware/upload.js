@@ -118,6 +118,9 @@ const uploadEventImage = generalUpload.single('eventImage');
 // Middleware for employee service photo upload
 const uploadEmployeeServicePhoto = generalUpload.single('servicePhoto');
 
+// Middleware for bank verification document upload
+const uploadBankVerificationDocument = generalUpload.single('bankVerificationDocument');
+
 // Error handler middleware for multer
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
@@ -128,6 +131,7 @@ const handleUploadError = (err, req, res, next) => {
         message: 'File size is too large. Maximum size is 5MB.'
       });
     }
+
     if (err.code === 'LIMIT_UNEXPECTED_FILE') {
       return res.status(400).json({
         success: false,
@@ -159,5 +163,6 @@ module.exports = {
   uploadEventImage,
   uploadEmployeeServicePhoto,
   uploadBusinessProfileFiles,
+  uploadBankVerificationDocument,
   handleUploadError
 };

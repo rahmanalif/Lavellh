@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const businessOwnerController = require('../controllers/businessOwnerController');
-const { uploadIdCards, uploadBusinessOwnerFiles, uploadProfilePicture, uploadBusinessProfileFiles, handleUploadError } = require('../middleware/upload');
+const { uploadIdCards, uploadBusinessOwnerFiles, uploadProfilePicture, uploadBusinessProfileFiles, uploadBankVerificationDocument, handleUploadError } = require('../middleware/upload');
 const auth = require('../middleware/auth');
 
 /**
@@ -22,6 +22,20 @@ router.post(
  * @access  Public
  */
 router.post('/login', businessOwnerController.loginBusinessOwner);
+
+/**
+ * @route   POST /api/business-owners/logout
+ * @desc    Logout business owner (revoke refresh token)
+ * @access  Public
+ */
+router.post('/logout', businessOwnerController.logout);
+
+/**
+ * @route   POST /api/business-owners/logout-all
+ * @desc    Logout business owner from all devices
+ * @access  Private (Business Owner only)
+ */
+router.post('/logout-all', auth, businessOwnerController.logoutAll);
 
 // ============ PASSWORD RESET ROUTES ============
 
@@ -94,5 +108,37 @@ router.put('/business-profile', auth, uploadBusinessProfileFiles, handleUploadEr
  * @access  Private (Business Owner only)
  */
 router.delete('/business-profile/photos/:photoIndex', auth, businessOwnerController.deleteBusinessProfilePhoto);
+
+// ============ BANK INFORMATION ROUTES ============
+
+/**
+ * @route   GET /api/business-owners/bank-information
+ * @desc    Get business owner's bank information
+ * @access  Private (Business Owner only)
+ */
+router.get('/bank-information', auth, businessOwnerController.getBankInformation);
+
+/**
+ * @route   POST /api/business-owners/bank-information
+ * @desc    Save business owner's bank information (create)
+ * @access  Private (Business Owner only)
+ * @note    Optional file upload: bankVerificationDocument
+ */
+router.post('/bank-information', auth, uploadBankVerificationDocument, handleUploadError, businessOwnerController.saveBankInformation);
+
+/**
+ * @route   PUT /api/business-owners/bank-information
+ * @desc    Update business owner's bank information
+ * @access  Private (Business Owner only)
+ * @note    Optional file upload: bankVerificationDocument
+ */
+router.put('/bank-information', auth, uploadBankVerificationDocument, handleUploadError, businessOwnerController.updateBankInformation);
+
+/**
+ * @route   DELETE /api/business-owners/bank-information/document
+ * @desc    Delete bank verification document
+ * @access  Private (Business Owner only)
+ */
+router.delete('/bank-information/document', auth, businessOwnerController.deleteBankVerificationDocument);
 
 module.exports = router;

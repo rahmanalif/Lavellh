@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
 const { generateToken, getTokenExpiresIn } = require('../utility/jwt');
+const { requestRegistrationOTP } = require('./registrationOTPController');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const fs = require('fs').promises;
 const crypto = require('crypto');
@@ -14,7 +15,6 @@ const register = async (req, res) => {
 
     const { fullName, email, phoneNumber, password, termsAccepted } = req.body;
 
-    // Validate required fields
     if (!fullName || !password) {
       return res.status(400).json({
         success: false,
@@ -22,7 +22,6 @@ const register = async (req, res) => {
       });
     }
 
-    // Validate that at least email or phoneNumber is provided
     if (!email && !phoneNumber) {
       return res.status(400).json({
         success: false,
@@ -30,7 +29,6 @@ const register = async (req, res) => {
       });
     }
 
-    // Validate terms acceptance
     if (!termsAccepted || termsAccepted !== true) {
       return res.status(400).json({
         success: false,
@@ -38,77 +36,15 @@ const register = async (req, res) => {
       });
     }
 
-    // Check if user already exists with email or phone
-    const query = [];
-    if (email) query.push({ email });
-    if (phoneNumber) query.push({ phoneNumber });
-
-    const existingUser = await User.findOne({
-      $or: query
-    });
-
-    if (existingUser) {
+    if (password.length < 6) {
       return res.status(400).json({
         success: false,
-        message: 'User already exists with this email or phone number'
+        message: 'Password must be at least 6 characters long'
       });
     }
 
-    // Create new user
-    const user = new User({
-      fullName,
-      email: email || undefined,
-      phoneNumber: phoneNumber || undefined,
-      password,
-      termsAccepted,
-      userType: 'user' // Explicitly set as user type
-    });
-
-    await user.save();
-
-    // Generate access token and refresh token
-    const accessToken = user.generateAccessToken();
-    const refreshToken = user.generateRefreshToken();
-
-    // Calculate refresh token expiration
-    const refreshExpiresIn = getTokenExpiresIn('refresh');
-    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
-
-    // Store refresh token in database
-    const refreshTokenDoc = new RefreshToken({
-      userId: user._id,
-      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
-      expiresAt,
-      deviceInfo: {
-        userAgent: req.headers['user-agent'],
-        ip: req.ip || req.connection.remoteAddress
-      }
-    });
-
-    await refreshTokenDoc.save();
-
-    // Get access token expiration time
-    const accessExpiresIn = getTokenExpiresIn('access');
-
-    res.status(201).json({
-      success: true,
-      message: 'User registered successfully',
-      data: {
-        user: {
-          id: user._id,
-          fullName: user.fullName,
-          email: user.email,
-          phoneNumber: user.phoneNumber,
-          userType: user.userType
-        },
-        accessToken,
-        refreshToken,
-        expiresIn: accessExpiresIn,
-        tokenType: 'Bearer'
-      }
-    });
+    return requestRegistrationOTP(req, res);
   } catch (error) {
-    // Handle validation errors
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map(err => err.message);
       return res.status(400).json({

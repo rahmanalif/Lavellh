@@ -17,11 +17,53 @@ router.post(
 );
 
 /**
+ * @route   POST /api/providers/register/verify-otp
+ * @desc    Verify provider registration OTP
+ * @access  Public
+ */
+router.post('/register/verify-otp', providerController.verifyProviderRegistrationOTP);
+
+/**
  * @route   POST /api/providers/login
  * @desc    Login provider
  * @access  Public
  */
 router.post('/login', providerController.loginProvider);
+
+/**
+ * @route   POST /api/providers/logout
+ * @desc    Logout provider (revoke refresh token)
+ * @access  Public
+ */
+router.post('/logout', providerController.logout);
+
+/**
+ * @route   POST /api/providers/logout-all
+ * @desc    Logout provider from all devices
+ * @access  Private (Provider only)
+ */
+router.post('/logout-all', auth, providerController.logoutAll);
+
+/**
+ * @route   POST /api/providers/forgot-password
+ * @desc    Send OTP for provider password reset
+ * @access  Public
+ */
+router.post('/forgot-password', providerController.forgotPassword);
+
+/**
+ * @route   POST /api/providers/verify-otp
+ * @desc    Verify OTP for provider password reset
+ * @access  Public
+ */
+router.post('/verify-otp', providerController.verifyOTP);
+
+/**
+ * @route   POST /api/providers/reset-password
+ * @desc    Reset provider password using reset token
+ * @access  Public
+ */
+router.post('/reset-password', providerController.resetPasswordWithOTP);
 
 /**
  * @route   GET /api/providers/me

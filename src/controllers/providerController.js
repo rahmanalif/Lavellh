@@ -2,11 +2,114 @@ const User = require('../models/User');
 const Provider = require('../models/Provider');
 const Portfolio = require('../models/Portfolio');
 const RefreshToken = require('../models/RefreshToken');
+const ProviderRegistrationOTP = require('../models/ProviderRegistrationOTP');
 const ocrService = require('../utility/ocrService');
 const { getTokenExpiresIn } = require('../utility/jwt');
+const { sendRegistrationOTPEmail, sendOTPEmail } = require('../utility/emailService');
+const { sendRegistrationOTPSMS, sendOTPSMS } = require('../utility/smsService');
 const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const path = require('path');
+
+const OTP_EXPIRY_MS = 10 * 60 * 1000;
+const idCardsDir = path.join(__dirname, '../../uploads/id-cards');
+
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const hashValue = (value) => crypto.createHash('sha256').update(value).digest('hex');
+
+const removeFileIfExists = async (filePath) => {
+  if (!filePath) return;
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    // Ignore cleanup errors
+  }
+};
+
+const removePendingIdCards = async (pending) => {
+  if (!pending) return;
+  if (pending.idCardFrontFilename) {
+    await removeFileIfExists(path.join(idCardsDir, pending.idCardFrontFilename));
+  }
+  if (pending.idCardBackFilename) {
+    await removeFileIfExists(path.join(idCardsDir, pending.idCardBackFilename));
+  }
+};
+
+const createProviderAndTokens = async (req, payload) => {
+  const session = await User.startSession();
+  session.startTransaction();
+
+  try {
+    const user = new User({
+      fullName: payload.fullName,
+      email: payload.email || undefined,
+      phoneNumber: payload.phoneNumber || undefined,
+      password: payload.passwordHash,
+      userType: 'provider',
+      authProvider: 'local',
+      termsAccepted: true
+    });
+
+    await user.save({ session });
+
+    const provider = new Provider({
+      userId: user._id,
+      idCard: {
+        frontImage: payload.idCardFrontFilename || null,
+        backImage: payload.idCardBackFilename || null,
+        idNumber: null,
+        fullNameOnId: payload.fullName,
+        dateOfBirth: null,
+        expiryDate: null,
+        issuedDate: null,
+        nationality: null,
+        address: null
+      },
+      occupation: payload.occupation || null,
+      referenceId: payload.referenceId || null,
+      verificationStatus: 'pending'
+    });
+
+    await provider.save({ session });
+    await session.commitTransaction();
+
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    const refreshTokenDoc = new RefreshToken({
+      userId: user._id,
+      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+      expiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
+    });
+
+    await refreshTokenDoc.save();
+
+    const accessExpiresIn = getTokenExpiresIn('access');
+
+    return {
+      user,
+      provider,
+      accessToken,
+      refreshToken,
+      accessExpiresIn
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
 
 /**
  * Register a new provider
@@ -25,10 +128,17 @@ exports.registerProvider = async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!fullName || !email || !password) {
+    if (!fullName || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Full name, email, and password are required'
+        message: 'Full name and password are required'
+      });
+    }
+
+    if (!email && !phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone number is required'
       });
     }
 
@@ -48,10 +158,14 @@ exports.registerProvider = async (req, res) => {
       });
     }
 
+    const normalizedEmail = email ? email.toLowerCase() : undefined;
+
     // Check if ID card images are uploaded (both optional now)
     // Just store the images, no OCR or validation
     const idCardFrontPath = req.files?.idCardFront ? req.files.idCardFront[0].path : null;
     const idCardBackPath = req.files?.idCardBack ? req.files.idCardBack[0].path : null;
+    const idCardFrontFilename = req.files?.idCardFront ? req.files.idCardFront[0].filename : null;
+    const idCardBackFilename = req.files?.idCardBack ? req.files.idCardBack[0].filename : null;
 
     if (idCardFrontPath) {
       console.log('ID card front uploaded (stored for records only, no validation)');
@@ -64,15 +178,15 @@ exports.registerProvider = async (req, res) => {
     // Check if user already exists
     const existingUser = await User.findOne({
       $or: [
-        { email: email.toLowerCase() },
+        ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
         ...(phoneNumber ? [{ phoneNumber }] : [])
       ]
     });
 
     if (existingUser) {
       // Clean up uploaded files
-      if (idCardFrontPath) await fs.unlink(idCardFrontPath).catch(() => {});
-      if (idCardBackPath) await fs.unlink(idCardBackPath).catch(() => {});
+      await removeFileIfExists(idCardFrontPath);
+      await removeFileIfExists(idCardBackPath);
 
       return res.status(400).json({
         success: false,
@@ -80,109 +194,93 @@ exports.registerProvider = async (req, res) => {
       });
     }
 
-    // Start a database transaction to ensure atomic operations
-    const session = await User.startSession();
-    session.startTransaction();
+    const identifiers = [];
+    if (normalizedEmail) identifiers.push({ email: normalizedEmail });
+    if (phoneNumber) identifiers.push({ phoneNumber });
 
     try {
-      // Create User account
-      const user = new User({
-        fullName,
-        email: email.toLowerCase(),
-        phoneNumber,
-        password,
-        userType: 'provider',
-        authProvider: 'local',
-        termsAccepted: true
-      });
+      const pendingQuery = identifiers.length > 1 ? { $or: identifiers } : identifiers[0];
+      const existingPending = await ProviderRegistrationOTP.findOne(pendingQuery);
 
-      await user.save({ session });
-
-      // Create Provider profile
-      const provider = new Provider({
-        userId: user._id,
-        idCard: {
-          frontImage: req.files?.idCardFront ? req.files.idCardFront[0].filename : null,
-          backImage: req.files?.idCardBack ? req.files.idCardBack[0].filename : null,
-          idNumber: null, // No OCR extraction - to be filled manually by admin
-          fullNameOnId: fullName, // Use provided full name
-          dateOfBirth: null, // To be filled manually by admin
-          expiryDate: null,
-          issuedDate: null,
-          nationality: null,
-          address: null
-        },
-        occupation: occupation || null,
-        referenceId: referenceId || null,
-        verificationStatus: 'pending' // Requires admin approval
-      });
-
-      await provider.save({ session });
-
-      // Commit the transaction
-      await session.commitTransaction();
-
-      // Generate access token and refresh token
-      const accessToken = user.generateAccessToken();
-      const refreshToken = user.generateRefreshToken();
-
-      // Calculate refresh token expiration
-      const refreshExpiresIn = getTokenExpiresIn('refresh');
-      const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
-
-      // Store refresh token in database
-      const refreshTokenDoc = new RefreshToken({
-        userId: user._id,
-        token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
-        expiresAt,
-        deviceInfo: {
-          userAgent: req.headers['user-agent'],
-          ip: req.ip || req.connection.remoteAddress
+      if (existingPending) {
+        if (normalizedEmail && existingPending.email && normalizedEmail !== existingPending.email) {
+          return res.status(400).json({
+            success: false,
+            message: 'Email does not match existing pending registration'
+          });
         }
-      });
+        if (phoneNumber && existingPending.phoneNumber && phoneNumber !== existingPending.phoneNumber) {
+          return res.status(400).json({
+            success: false,
+            message: 'Phone number does not match existing pending registration'
+          });
+        }
+      }
 
-      await refreshTokenDoc.save();
+      if (existingPending && idCardFrontFilename && existingPending.idCardFrontFilename) {
+        await removeFileIfExists(path.join(idCardsDir, existingPending.idCardFrontFilename));
+      }
+      if (existingPending && idCardBackFilename && existingPending.idCardBackFilename) {
+        await removeFileIfExists(path.join(idCardsDir, existingPending.idCardBackFilename));
+      }
 
-      // Get access token expiration time
-      const accessExpiresIn = getTokenExpiresIn('access');
+      const salt = await bcrypt.genSalt(12);
+      const passwordHash = await bcrypt.hash(password, salt);
+      const otp = generateOTP();
+      const otpHash = hashValue(otp);
+      const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MS);
 
-      // Return success response
-      res.status(201).json({
+      const update = {
+        email: normalizedEmail || existingPending?.email || undefined,
+        phoneNumber: phoneNumber || existingPending?.phoneNumber || undefined,
+        fullName: fullName || existingPending?.fullName,
+        passwordHash,
+        occupation: occupation || existingPending?.occupation || null,
+        referenceId: referenceId || existingPending?.referenceId || null,
+        idCardFrontFilename: idCardFrontFilename || existingPending?.idCardFrontFilename || null,
+        idCardBackFilename: idCardBackFilename || existingPending?.idCardBackFilename || null,
+        otpHash,
+        otpExpiresAt,
+        isVerified: false,
+        verificationTokenHash: undefined,
+        verificationTokenExpiresAt: undefined
+      };
+
+      const pending = await ProviderRegistrationOTP.findOneAndUpdate(
+        pendingQuery,
+        update,
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      try {
+        const displayName = fullName || existingPending?.fullName || 'there';
+        if (normalizedEmail) {
+          await sendRegistrationOTPEmail(normalizedEmail, otp, displayName);
+        } else {
+          await sendRegistrationOTPSMS(phoneNumber, otp, displayName);
+        }
+      } catch (sendError) {
+        await ProviderRegistrationOTP.deleteOne({ _id: pending._id });
+        await removeFileIfExists(idCardFrontPath);
+        await removeFileIfExists(idCardBackPath);
+        console.error('Error sending provider registration OTP:', sendError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to send OTP. Please try again later.',
+          error: process.env.NODE_ENV === 'development' ? sendError.message : undefined
+        });
+      }
+
+      return res.status(200).json({
         success: true,
-        message: 'Provider registration successful. Your account is pending verification.',
+        message: `OTP has been sent to your ${normalizedEmail ? 'email' : 'phone number'}.`,
         data: {
-          user: {
-            id: user._id,
-            fullName: user.fullName,
-            email: user.email,
-            phoneNumber: user.phoneNumber,
-            userType: user.userType,
-            authProvider: user.authProvider
-          },
-          provider: {
-            id: provider._id,
-            verificationStatus: provider.verificationStatus,
-            occupation: provider.occupation,
-            referenceId: provider.referenceId,
-            idCardUploaded: {
-              front: !!idCardFrontPath,
-              back: !!idCardBackPath
-            }
-          },
-          accessToken,
-          refreshToken,
-          expiresIn: accessExpiresIn,
-          tokenType: 'Bearer'
+          sentTo: normalizedEmail ? 'email' : 'phone',
+          expiresIn: '10 minutes'
         }
       });
-
-    } catch (transactionError) {
-      // Rollback the transaction on error
-      await session.abortTransaction();
-      throw transactionError; // Re-throw to be caught by outer catch block
-    } finally {
-      // End the session
-      session.endSession();
+    } catch (error) {
+      throw error;
     }
 
   } catch (error) {
@@ -191,10 +289,10 @@ exports.registerProvider = async (req, res) => {
     // Clean up uploaded files on error
     if (req.files) {
       if (req.files.idCardFront) {
-        await fs.unlink(req.files.idCardFront[0].path).catch(() => {});
+        await removeFileIfExists(req.files.idCardFront[0].path);
       }
       if (req.files.idCardBack) {
-        await fs.unlink(req.files.idCardBack[0].path).catch(() => {});
+        await removeFileIfExists(req.files.idCardBack[0].path);
       }
     }
 
@@ -202,6 +300,135 @@ exports.registerProvider = async (req, res) => {
       success: false,
       message: 'An error occurred during registration',
       error: error.message
+    });
+  }
+};
+
+/**
+ * Verify provider registration OTP and create provider
+ * POST /api/providers/register/verify-otp
+ */
+exports.verifyProviderRegistrationOTP = async (req, res) => {
+  try {
+    const { email, phoneNumber, otp } = req.body;
+
+    if (!email && !phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone number is required'
+      });
+    }
+
+    if (!otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP is required'
+      });
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP must be a 6-digit number'
+      });
+    }
+
+    const normalizedEmail = email ? email.toLowerCase() : undefined;
+    const pending = await ProviderRegistrationOTP.findOne(
+      normalizedEmail ? { email: normalizedEmail } : { phoneNumber }
+    ).select('+otpHash +otpExpiresAt +passwordHash');
+
+    if (!pending) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request'
+      });
+    }
+
+    if (pending.otpExpiresAt && Date.now() > pending.otpExpiresAt.getTime()) {
+      await ProviderRegistrationOTP.deleteOne({ _id: pending._id });
+      await removePendingIdCards(pending);
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Please request a new one.'
+      });
+    }
+
+    const isValid = hashValue(otp) === pending.otpHash;
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP. Please try again.'
+      });
+    }
+
+    if (!pending.fullName || !pending.passwordHash) {
+      return res.status(400).json({
+        success: false,
+        message: 'Registration data is incomplete. Please register again.'
+      });
+    }
+
+    const identifiers = [];
+    if (pending.email) identifiers.push({ email: pending.email });
+    if (pending.phoneNumber) identifiers.push({ phoneNumber: pending.phoneNumber });
+
+    const existingUser = await User.findOne({ $or: identifiers });
+    if (existingUser) {
+      await ProviderRegistrationOTP.deleteOne({ _id: pending._id });
+      return res.status(400).json({
+        success: false,
+        message: 'User with this email or phone number already exists'
+      });
+    }
+
+    const authData = await createProviderAndTokens(req, {
+      fullName: pending.fullName,
+      email: pending.email,
+      phoneNumber: pending.phoneNumber,
+      passwordHash: pending.passwordHash,
+      occupation: pending.occupation,
+      referenceId: pending.referenceId,
+      idCardFrontFilename: pending.idCardFrontFilename,
+      idCardBackFilename: pending.idCardBackFilename
+    });
+
+    await ProviderRegistrationOTP.deleteOne({ _id: pending._id });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Provider registration successful. Your account is pending verification.',
+      data: {
+        user: {
+          id: authData.user._id,
+          fullName: authData.user.fullName,
+          email: authData.user.email,
+          phoneNumber: authData.user.phoneNumber,
+          userType: authData.user.userType,
+          authProvider: authData.user.authProvider
+        },
+        provider: {
+          id: authData.provider._id,
+          verificationStatus: authData.provider.verificationStatus,
+          occupation: authData.provider.occupation,
+          referenceId: authData.provider.referenceId,
+          idCardUploaded: {
+            front: !!authData.provider.idCard?.frontImage,
+            back: !!authData.provider.idCard?.backImage
+          }
+        },
+        accessToken: authData.accessToken,
+        refreshToken: authData.refreshToken,
+        expiresIn: authData.accessExpiresIn,
+        tokenType: 'Bearer'
+      }
+    });
+  } catch (error) {
+    console.error('Verify provider OTP error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error verifying OTP',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -333,6 +560,66 @@ exports.loginProvider = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred during login',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Logout provider
+ * POST /api/providers/logout
+ */
+exports.logout = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const storedToken = await RefreshToken.findOne({ token: hashedToken });
+
+    if (storedToken) {
+      storedToken.isRevoked = true;
+      await storedToken.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    console.error('Provider logout error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Logout provider from all devices
+ * POST /api/providers/logout-all
+ */
+exports.logoutAll = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    await RefreshToken.revokeAllForUser(userId);
+
+    res.json({
+      success: true,
+      message: 'Logged out from all devices successfully'
+    });
+  } catch (error) {
+    console.error('Provider logout all error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout',
       error: error.message
     });
   }
@@ -563,6 +850,251 @@ exports.updateProviderProfile = async (req, res) => {
       success: false,
       message: 'An error occurred while updating provider profile',
       error: error.message
+    });
+  }
+};
+
+/**
+ * Forgot password - Send OTP to email or phone
+ * POST /api/providers/forgot-password
+ */
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email, phoneNumber } = req.body;
+
+    if (!email && !phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone number is required'
+      });
+    }
+
+    const query = email ? { email: email.toLowerCase() } : { phoneNumber };
+    const user = await User.findOne({
+      ...query,
+      userType: 'provider'
+    });
+
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: 'If a provider account exists with this information, you will receive an OTP shortly.'
+      });
+    }
+
+    const provider = await Provider.findOne({ userId: user._id });
+    if (!provider) {
+      return res.status(200).json({
+        success: true,
+        message: 'If a provider account exists with this information, you will receive an OTP shortly.'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Your account has been deactivated. Please contact support.'
+      });
+    }
+
+    const otp = user.generatePasswordResetOTP();
+    await user.save({ validateBeforeSave: false });
+
+    try {
+      if (email && user.email) {
+        await sendOTPEmail(user.email, otp, user.fullName);
+      } else if (phoneNumber && user.phoneNumber) {
+        await sendOTPSMS(user.phoneNumber, otp, user.fullName);
+      }
+
+      res.status(200).json({
+        success: true,
+        message: `OTP has been sent to your ${email ? 'email' : 'phone number'}. Please check and enter the code.`,
+        data: {
+          sentTo: email ? 'email' : 'phone',
+          expiresIn: '10 minutes'
+        }
+      });
+    } catch (sendError) {
+      user.resetPasswordOTP = undefined;
+      user.resetPasswordOTPExpires = undefined;
+      await user.save({ validateBeforeSave: false });
+
+      console.error('Error sending provider OTP:', sendError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send OTP. Please try again later.',
+        error: process.env.NODE_ENV === 'development' ? sendError.message : undefined
+      });
+    }
+  } catch (error) {
+    console.error('Provider forgot password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while processing your request',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Verify OTP
+ * POST /api/providers/verify-otp
+ */
+exports.verifyOTP = async (req, res) => {
+  try {
+    const { email, phoneNumber, otp } = req.body;
+
+    if (!email && !phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone number is required'
+      });
+    }
+
+    if (!otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP is required'
+      });
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP must be a 6-digit number'
+      });
+    }
+
+    const query = email ? { email: email.toLowerCase() } : { phoneNumber };
+    const user = await User.findOne({
+      ...query,
+      userType: 'provider'
+    }).select('+resetPasswordOTP +resetPasswordOTPExpires');
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request'
+      });
+    }
+
+    const provider = await Provider.findOne({ userId: user._id });
+    if (!provider) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    const isValid = user.verifyPasswordResetOTP(otp);
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired OTP. Please request a new one.'
+      });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    user.resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+    user.resetPasswordTokenExpires = Date.now() + 10 * 60 * 1000;
+    user.resetPasswordOTP = undefined;
+    user.resetPasswordOTPExpires = undefined;
+    await user.save({ validateBeforeSave: false });
+
+    res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully. You can now reset your password.',
+      data: {
+        resetToken,
+        expiresIn: '10 minutes'
+      }
+    });
+  } catch (error) {
+    console.error('Provider verify OTP error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while verifying OTP',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Reset password with token
+ * POST /api/providers/reset-password
+ */
+exports.resetPasswordWithOTP = async (req, res) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+
+    if (!resetToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reset token is required'
+      });
+    }
+
+    if (!newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password is required'
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters long'
+      });
+    }
+
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordTokenExpires: { $gt: Date.now() },
+      userType: 'provider'
+    }).select('+resetPasswordToken +resetPasswordTokenExpires +password');
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset token. Please verify OTP again.'
+      });
+    }
+
+    const provider = await Provider.findOne({ userId: user._id });
+    if (!provider) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider profile not found'
+      });
+    }
+
+    user.password = newPassword;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordTokenExpires = undefined;
+    user.resetPasswordOTP = undefined;
+    user.resetPasswordOTPExpires = undefined;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Password has been reset successfully. You can now login with your new password.'
+    });
+  } catch (error) {
+    console.error('Provider reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while resetting password',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
