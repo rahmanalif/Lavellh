@@ -10,6 +10,9 @@ const {
   refreshAccessToken,
   logout,
   logoutAll,
+  getBankInformation,
+  saveBankInformation,
+  updateBankInformation,
   getRecentProviders
 } = require('../controllers/authController');
 const { requestPasswordReset, verifyOTP, resetPassword } = require('../controllers/passwordResetController');
@@ -43,6 +46,9 @@ router.put('/me', auth, uploadProfilePicture, handleUploadError, updateProfile);
 router.post('/change-password', auth, changePassword);
 router.post('/update-location', auth, updateLocation);
 router.post('/logout-all', auth, logoutAll);
+router.get('/bank-information', auth, getBankInformation);
+router.post('/bank-information', auth, saveBankInformation);
+router.put('/bank-information', auth, updateBankInformation);
 router.get('/recent-providers', auth, getRecentProviders);
 
 module.exports = router;

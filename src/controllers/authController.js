@@ -660,6 +660,134 @@ const logoutAll = async (req, res) => {
   }
 };
 
+// Get user's bank information
+const getBankInformation = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        bankInformation: user.bankInformation || null
+      }
+    });
+  } catch (error) {
+    console.error('Get bank information error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching bank information',
+      error: error.message
+    });
+  }
+};
+
+// Save user's bank information
+const saveBankInformation = async (req, res) => {
+  try {
+    const {
+      accountHolderName,
+      bankName,
+      accountNumber,
+      routingNumber,
+      accountHolderType
+    } = req.body;
+
+    if (!accountHolderName || !bankName || !accountNumber || !routingNumber || !accountHolderType) {
+      return res.status(400).json({
+        success: false,
+        message: 'All bank information fields are required'
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    user.bankInformation = {
+      accountHolderName,
+      bankName,
+      accountNumber,
+      routingNumber,
+      accountHolderType
+    };
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Bank information saved successfully',
+      data: {
+        bankInformation: user.bankInformation
+      }
+    });
+  } catch (error) {
+    console.error('Save bank information error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error saving bank information',
+      error: error.message
+    });
+  }
+};
+
+// Update user's bank information
+const updateBankInformation = async (req, res) => {
+  try {
+    const {
+      accountHolderName,
+      bankName,
+      accountNumber,
+      routingNumber,
+      accountHolderType
+    } = req.body;
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (!user.bankInformation) {
+      user.bankInformation = {};
+    }
+
+    if (accountHolderName !== undefined) user.bankInformation.accountHolderName = accountHolderName;
+    if (bankName !== undefined) user.bankInformation.bankName = bankName;
+    if (accountNumber !== undefined) user.bankInformation.accountNumber = accountNumber;
+    if (routingNumber !== undefined) user.bankInformation.routingNumber = routingNumber;
+    if (accountHolderType !== undefined) user.bankInformation.accountHolderType = accountHolderType;
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Bank information updated successfully',
+      data: {
+        bankInformation: user.bankInformation
+      }
+    });
+  } catch (error) {
+    console.error('Update bank information error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error updating bank information',
+      error: error.message
+    });
+  }
+};
+
 // Get user's recent providers (from bookings and appointments)
 const getRecentProviders = async (req, res) => {
   try {
@@ -813,5 +941,8 @@ module.exports = {
   refreshAccessToken,
   logout,
   logoutAll,
+  getBankInformation,
+  saveBankInformation,
+  updateBankInformation,
   getRecentProviders
 };

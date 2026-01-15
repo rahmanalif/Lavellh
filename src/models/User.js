@@ -104,6 +104,28 @@ const userSchema = new mongoose.Schema({
     type: Date,
     select: false
   },
+  bankInformation: {
+    accountHolderName: {
+      type: String,
+      trim: true
+    },
+    bankName: {
+      type: String,
+      trim: true
+    },
+    accountNumber: {
+      type: String,
+      trim: true
+    },
+    routingNumber: {
+      type: String,
+      trim: true
+    },
+    accountHolderType: {
+      type: String,
+      trim: true
+    }
+  },
   location: {
     type: {
       type: String,
