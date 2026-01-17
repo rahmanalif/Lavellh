@@ -19,6 +19,8 @@ const eventManagerRoutes = require('./eventManager.routes');
 const homeRoutes = require('./home.routes');
 const userRoutes = require('./user.routes');
 const employeeRoutes = require('./employee.routes');
+const businessOwnerBookingRoutes = require('./businessOwnerBooking.routes');
+const businessOwnerAppointmentRoutes = require('./businessOwnerAppointment.routes');
 
 // Use auth routes
 router.use('/auth', authRoutes);
@@ -52,6 +54,12 @@ router.use('/bookings', bookingRoutes);
 
 // Use appointment routes (for appointment-based bookings)
 router.use('/appointments', appointmentRoutes);
+
+// Use business owner booking routes (for employee services)
+router.use('/business-owner-bookings', businessOwnerBookingRoutes);
+
+// Use business owner appointment routes (for employee services)
+router.use('/business-owner-appointments', businessOwnerAppointmentRoutes);
 
 // Use wishlist routes
 router.use('/wishlist', wishlistRoutes);

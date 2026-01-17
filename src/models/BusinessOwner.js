@@ -125,27 +125,10 @@ const businessOwnerSchema = new mongoose.Schema({
       trim: true,
       maxlength: [50, 'Routing number cannot exceed 50 characters']
     },
-    swiftCode: {
+    accountHolderType: {
       type: String,
       trim: true,
-      maxlength: [20, 'SWIFT code cannot exceed 20 characters']
-    },
-    iban: {
-      type: String,
-      trim: true,
-      maxlength: [50, 'IBAN cannot exceed 50 characters']
-    },
-    bankAddress: {
-      street: String,
-      city: String,
-      state: String,
-      zipCode: String,
-      country: String
-    },
-    bankVerificationDocument: {
-      type: String, // Cloudinary URL for bank verification document
-      required: false,
-      default: null
+      maxlength: [50, 'Account holder type cannot exceed 50 characters']
     }
   }
 }, {

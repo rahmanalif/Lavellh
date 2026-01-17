@@ -1,7 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const businessOwnerController = require('../controllers/businessOwnerController');
-const { uploadIdCards, uploadBusinessOwnerFiles, uploadProfilePicture, uploadBusinessProfileFiles, uploadBankVerificationDocument, handleUploadError } = require('../middleware/upload');
+const faqController = require('../controllers/faqController');
+const businessOwnerBookingController = require('../controllers/businessOwnerBookingController');
+const { uploadIdCards, uploadBusinessOwnerFiles, uploadProfilePicture, uploadBusinessProfileFiles, handleUploadError } = require('../middleware/upload');
 const auth = require('../middleware/auth');
 
 /**
@@ -122,17 +124,15 @@ router.get('/bank-information', auth, businessOwnerController.getBankInformation
  * @route   POST /api/business-owners/bank-information
  * @desc    Save business owner's bank information (create)
  * @access  Private (Business Owner only)
- * @note    Optional file upload: bankVerificationDocument
  */
-router.post('/bank-information', auth, uploadBankVerificationDocument, handleUploadError, businessOwnerController.saveBankInformation);
+router.post('/bank-information', auth, businessOwnerController.saveBankInformation);
 
 /**
  * @route   PUT /api/business-owners/bank-information
  * @desc    Update business owner's bank information
  * @access  Private (Business Owner only)
- * @note    Optional file upload: bankVerificationDocument
  */
-router.put('/bank-information', auth, uploadBankVerificationDocument, handleUploadError, businessOwnerController.updateBankInformation);
+router.put('/bank-information', auth, businessOwnerController.updateBankInformation);
 
 /**
  * @route   DELETE /api/business-owners/bank-information/document
@@ -140,5 +140,134 @@ router.put('/bank-information', auth, uploadBankVerificationDocument, handleUplo
  * @access  Private (Business Owner only)
  */
 router.delete('/bank-information/document', auth, businessOwnerController.deleteBankVerificationDocument);
+
+// ============ FAQ ROUTES ============
+
+/**
+ * @route   GET /api/business-owners/faqs
+ * @desc    Get active FAQs
+ * @access  Private (Business Owner only)
+ */
+router.get('/faqs', auth, faqController.getActiveFaqs);
+
+// ============ PRIVACY POLICY ROUTE ============
+
+/**
+ * @route   GET /api/business-owners/privacy-policy
+ * @desc    Get privacy policy
+ * @access  Private (Business Owner only)
+ */
+router.get('/privacy-policy', auth, businessOwnerController.getPrivacyPolicy);
+
+// ============ TERMS AND CONDITIONS ROUTE ============
+
+/**
+ * @route   GET /api/business-owners/terms-and-conditions
+ * @desc    Get terms and conditions
+ * @access  Private (Business Owner only)
+ */
+router.get('/terms-and-conditions', auth, businessOwnerController.getTermsAndConditions);
+
+// ============ BUSINESS OWNER BOOKING MANAGEMENT ============
+
+/**
+ * @route   GET /api/business-owners/bookings
+ * @desc    Get all bookings for business owner's services
+ * @access  Private (Business Owner only)
+ */
+router.get('/bookings', auth, businessOwnerBookingController.getBusinessOwnerBookings);
+
+/**
+ * @route   GET /api/business-owners/bookings/:id
+ * @desc    Get booking details
+ * @access  Private (Business Owner only)
+ */
+router.get('/bookings/:id', auth, businessOwnerBookingController.getBusinessOwnerBookingDetails);
+
+/**
+ * @route   PATCH /api/business-owners/bookings/:id/accept
+ * @desc    Accept a booking request
+ * @access  Private (Business Owner only)
+ */
+router.patch('/bookings/:id/accept', auth, businessOwnerBookingController.acceptBusinessOwnerBooking);
+
+/**
+ * @route   PATCH /api/business-owners/bookings/:id/reject
+ * @desc    Reject a booking request
+ * @access  Private (Business Owner only)
+ */
+router.patch('/bookings/:id/reject', auth, businessOwnerBookingController.rejectBusinessOwnerBooking);
+
+/**
+ * @route   PATCH /api/business-owners/bookings/:id/start
+ * @desc    Mark booking as in progress
+ * @access  Private (Business Owner only)
+ */
+router.patch('/bookings/:id/start', auth, businessOwnerBookingController.startBusinessOwnerBooking);
+
+/**
+ * @route   PATCH /api/business-owners/bookings/:id/complete
+ * @desc    Mark booking as completed
+ * @access  Private (Business Owner only)
+ */
+router.patch('/bookings/:id/complete', auth, businessOwnerBookingController.completeBusinessOwnerBooking);
+
+// ============ BUSINESS OWNER APPOINTMENT MANAGEMENT ============
+
+/**
+ * @route   GET /api/business-owners/appointments
+ * @desc    Get all appointments for business owner's services
+ * @access  Private (Business Owner only)
+ */
+router.get('/appointments', auth, businessOwnerBookingController.getBusinessOwnerAppointments);
+
+/**
+ * @route   GET /api/business-owners/appointments/:id
+ * @desc    Get appointment details
+ * @access  Private (Business Owner only)
+ */
+router.get('/appointments/:id', auth, businessOwnerBookingController.getBusinessOwnerAppointmentDetails);
+
+/**
+ * @route   PATCH /api/business-owners/appointments/:id/accept
+ * @desc    Accept an appointment request
+ * @access  Private (Business Owner only)
+ */
+router.patch('/appointments/:id/accept', auth, businessOwnerBookingController.acceptBusinessOwnerAppointment);
+
+/**
+ * @route   PATCH /api/business-owners/appointments/:id/reject
+ * @desc    Reject an appointment request
+ * @access  Private (Business Owner only)
+ */
+router.patch('/appointments/:id/reject', auth, businessOwnerBookingController.rejectBusinessOwnerAppointment);
+
+/**
+ * @route   PATCH /api/business-owners/appointments/:id/reschedule
+ * @desc    Reschedule an appointment
+ * @access  Private (Business Owner only)
+ */
+router.patch('/appointments/:id/reschedule', auth, businessOwnerBookingController.rescheduleBusinessOwnerAppointment);
+
+/**
+ * @route   PATCH /api/business-owners/appointments/:id/start
+ * @desc    Mark appointment as in progress
+ * @access  Private (Business Owner only)
+ */
+router.patch('/appointments/:id/start', auth, businessOwnerBookingController.startBusinessOwnerAppointment);
+
+/**
+ * @route   PATCH /api/business-owners/appointments/:id/complete
+ * @desc    Mark appointment as completed
+ * @access  Private (Business Owner only)
+ */
+router.patch('/appointments/:id/complete', auth, businessOwnerBookingController.completeBusinessOwnerAppointment);
+
+/**
+ * @route   PATCH /api/business-owners/appointments/:id/no-show
+ * @desc    Mark appointment as no-show
+ * @access  Private (Business Owner only)
+ */
+router.patch('/appointments/:id/no-show', auth, businessOwnerBookingController.markBusinessOwnerNoShow);
 
 module.exports = router;

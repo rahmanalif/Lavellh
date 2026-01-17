@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
 const categoryController = require('../controllers/categoryController');
+const faqController = require('../controllers/faqController');
 const { verifyAdminToken, requirePermission, requireSuperAdmin } = require('../middleware/adminAuth');
 const { uploadCategoryIcon, handleUploadError } = require('../middleware/upload');
 
@@ -438,6 +439,56 @@ router.put(
   verifyAdminToken,
   requirePermission('canManageSettings'),
   adminController.updateSettings
+);
+
+// ============ FAQ MANAGEMENT ============
+
+/**
+ * @route   GET /api/admin/faqs
+ * @desc    Get all FAQs
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.get(
+  '/faqs',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  faqController.getAllFaqs
+);
+
+/**
+ * @route   POST /api/admin/faqs
+ * @desc    Create FAQ
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.post(
+  '/faqs',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  faqController.createFaq
+);
+
+/**
+ * @route   PUT /api/admin/faqs/:id
+ * @desc    Update FAQ
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.put(
+  '/faqs/:id',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  faqController.updateFaq
+);
+
+/**
+ * @route   DELETE /api/admin/faqs/:id
+ * @desc    Delete FAQ
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.delete(
+  '/faqs/:id',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  faqController.deleteFaq
 );
 
 module.exports = router;
