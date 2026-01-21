@@ -6,6 +6,13 @@ const mongoose = require('mongoose');
 const fs = require('fs').promises;
 const { uploadToCloudinary } = require('../utility/cloudinary');
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const removeLocalFile = async (file) => {
+  if (file && file.path) {
+    await fs.unlink(file.path).catch(() => {});
+  }
+};
+
 /**
  * Helper function to verify business owner access
  */
@@ -54,9 +61,13 @@ exports.createEmployeeWithService = async (req, res) => {
       appointmentEnabled,
       appointmentSlots
     } = req.body;
+    const servicePhotoFile = req.files?.servicePhoto?.[0];
+    const profilePhotoFile = req.files?.profilePhoto?.[0];
 
     // Validate required fields
     if (!fullName || !mobileNumber || !email) {
+      await removeLocalFile(servicePhotoFile);
+      await removeLocalFile(profilePhotoFile);
       return res.status(400).json({
         success: false,
         message: 'Employee full name, mobile number, and email are required'
@@ -64,6 +75,8 @@ exports.createEmployeeWithService = async (req, res) => {
     }
 
     if (!headline || !description) {
+      await removeLocalFile(servicePhotoFile);
+      await removeLocalFile(profilePhotoFile);
       return res.status(400).json({
         success: false,
         message: 'Service headline and description are required'
@@ -71,7 +84,7 @@ exports.createEmployeeWithService = async (req, res) => {
     }
 
     // Validate service photo uploaded
-    if (!req.file) {
+    if (!servicePhotoFile) {
       return res.status(400).json({
         success: false,
         message: 'Service photo is required'
@@ -83,6 +96,8 @@ exports.createEmployeeWithService = async (req, res) => {
     try {
       parsedCategories = JSON.parse(categories);
     } catch (error) {
+      await removeLocalFile(servicePhotoFile);
+      await removeLocalFile(profilePhotoFile);
       return res.status(400).json({
         success: false,
         message: 'Invalid categories format'
@@ -90,6 +105,8 @@ exports.createEmployeeWithService = async (req, res) => {
     }
 
     if (!parsedCategories || parsedCategories.length === 0) {
+      await removeLocalFile(servicePhotoFile);
+      await removeLocalFile(profilePhotoFile);
       return res.status(400).json({
         success: false,
         message: 'At least one category is required'
@@ -103,7 +120,8 @@ exports.createEmployeeWithService = async (req, res) => {
     });
 
     if (existingCategories.length !== parsedCategories.length) {
-      await fs.unlink(req.file.path).catch(() => {});
+      await removeLocalFile(servicePhotoFile);
+      await removeLocalFile(profilePhotoFile);
       return res.status(400).json({
         success: false,
         message: 'One or more invalid categories'
@@ -133,7 +151,8 @@ exports.createEmployeeWithService = async (req, res) => {
       try {
         parsedSlots = JSON.parse(appointmentSlots);
       } catch (error) {
-        await fs.unlink(req.file.path).catch(() => {});
+        await removeLocalFile(servicePhotoFile);
+        await removeLocalFile(profilePhotoFile);
         return res.status(400).json({
           success: false,
           message: 'Invalid appointment slots format'
@@ -141,7 +160,8 @@ exports.createEmployeeWithService = async (req, res) => {
       }
 
       if (!parsedSlots || parsedSlots.length === 0) {
-        await fs.unlink(req.file.path).catch(() => {});
+        await removeLocalFile(servicePhotoFile);
+        await removeLocalFile(profilePhotoFile);
         return res.status(400).json({
           success: false,
           message: 'At least one appointment slot is required when appointment is enabled'
@@ -149,7 +169,8 @@ exports.createEmployeeWithService = async (req, res) => {
       }
     } else {
       if (!basePrice || parseFloat(basePrice) <= 0) {
-        await fs.unlink(req.file.path).catch(() => {});
+        await removeLocalFile(servicePhotoFile);
+        await removeLocalFile(profilePhotoFile);
         return res.status(400).json({
           success: false,
           message: 'Base price is required when appointment is disabled'
@@ -161,14 +182,29 @@ exports.createEmployeeWithService = async (req, res) => {
     const { businessOwner } = await verifyBusinessOwnerAccess(req);
 
     // Upload service photo to Cloudinary
-    const uploadResult = await uploadToCloudinary(req.file.path, 'employee-services');
+    const uploadResult = await uploadToCloudinary(servicePhotoFile.path, 'employee-services');
 
     if (!uploadResult.success) {
-      await fs.unlink(req.file.path).catch(() => {});
+      await removeLocalFile(servicePhotoFile);
+      await removeLocalFile(profilePhotoFile);
       return res.status(500).json({
         success: false,
         message: 'Failed to upload service photo'
       });
+    }
+
+    let profilePhotoUrl = null;
+    if (profilePhotoFile) {
+      const profileUploadResult = await uploadToCloudinary(profilePhotoFile.path, 'employee-profiles');
+      if (!profileUploadResult.success) {
+        await removeLocalFile(servicePhotoFile);
+        await removeLocalFile(profilePhotoFile);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload profile photo'
+        });
+      }
+      profilePhotoUrl = profileUploadResult.url;
     }
 
     // Create Employee
@@ -177,6 +213,7 @@ exports.createEmployeeWithService = async (req, res) => {
       fullName,
       mobileNumber,
       email,
+      profilePhoto: profilePhotoUrl || undefined,
       isActive: true
     });
 
@@ -210,14 +247,16 @@ exports.createEmployeeWithService = async (req, res) => {
     await session.commitTransaction();
 
     // Cleanup local file
-    await fs.unlink(req.file.path).catch(() => {});
+    await removeLocalFile(servicePhotoFile);
+    await removeLocalFile(profilePhotoFile);
 
     res.status(201).json({
       success: true,
       message: 'Employee and service created successfully',
       data: {
         employee,
-        service: employeeService
+        service: employeeService,
+        employeeServiceId: employeeService._id
       }
     });
 
@@ -225,9 +264,10 @@ exports.createEmployeeWithService = async (req, res) => {
     await session.abortTransaction();
 
     // Cleanup uploaded file
-    if (req.file) {
-      await fs.unlink(req.file.path).catch(() => {});
-    }
+    const servicePhotoFile = req.files?.servicePhoto?.[0];
+    const profilePhotoFile = req.files?.profilePhoto?.[0];
+    await removeLocalFile(servicePhotoFile);
+    await removeLocalFile(profilePhotoFile);
 
     console.error('Create employee error:', error);
     res.status(500).json({
@@ -274,6 +314,22 @@ exports.listEmployees = async (req, res) => {
                 cond: { $eq: ['$$service.isActive', true] }
               }
             }
+          },
+          employeeServiceId: {
+            $let: {
+              vars: {
+                activeServices: {
+                  $filter: {
+                    input: '$services',
+                    as: 'service',
+                    cond: { $eq: ['$$service.isActive', true] }
+                  }
+                }
+              },
+              in: {
+                $ifNull: [{ $arrayElemAt: ['$$activeServices._id', 0] }, null]
+              }
+            }
           }
         }
       },
@@ -284,6 +340,7 @@ exports.listEmployees = async (req, res) => {
           email: 1,
           isActive: 1,
           serviceCount: 1,
+          employeeServiceId: 1,
           createdAt: 1,
           updatedAt: 1
         }
@@ -309,6 +366,61 @@ exports.listEmployees = async (req, res) => {
 };
 
 /**
+ * Search employees for business owner
+ * GET /api/business-owners/employees/search
+ */
+exports.searchEmployees = async (req, res) => {
+  try {
+    const { q, page = 1, limit = 20 } = req.query;
+
+    if (!q || !q.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a search query'
+      });
+    }
+
+    const { businessOwner } = await verifyBusinessOwnerAccess(req);
+    const escapedQuery = escapeRegExp(q.trim());
+    const regex = new RegExp(escapedQuery, 'i');
+    const skip = (page - 1) * limit;
+
+    const query = {
+      businessOwnerId: businessOwner._id,
+      isActive: true,
+      $or: [
+        { fullName: regex },
+        { email: regex },
+        { mobileNumber: regex }
+      ]
+    };
+
+    const [employees, total] = await Promise.all([
+      Employee.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit, 10)),
+      Employee.countDocuments(query)
+    ]);
+
+    res.status(200).json({
+      success: true,
+      count: employees.length,
+      total,
+      currentPage: parseInt(page, 10),
+      totalPages: Math.ceil(total / limit),
+      data: employees
+    });
+  } catch (error) {
+    console.error('Search employees error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'An error occurred while searching employees'
+    });
+  }
+};
+
+/**
  * Get employee detail with all services
  * GET /api/business-owners/employees/:id
  */
@@ -324,11 +436,16 @@ exports.getEmployeeDetail = async (req, res) => {
       isActive: true
     }).populate('categories', 'name');
 
+    const servicesWithIds = services.map((service) => ({
+      ...service.toObject(),
+      employeeServiceId: service._id
+    }));
+
     res.status(200).json({
       success: true,
       data: {
         employee,
-        services
+        services: servicesWithIds
       }
     });
 
@@ -342,13 +459,208 @@ exports.getEmployeeDetail = async (req, res) => {
 };
 
 /**
+ * Get employee overview, activities, and orders
+ * GET /api/business-owners/employees/:id/overview
+ */
+exports.getEmployeeOverview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const upcomingLimit = Math.min(parseInt(req.query.upcomingLimit || '10', 10), 50);
+    const ordersLimit = Math.min(parseInt(req.query.ordersLimit || '20', 10), 100);
+
+    const { employee } = await verifyBusinessOwnerAccess(req, id);
+
+    const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
+    const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
+    const User = require('../models/User');
+
+    const services = await EmployeeService.find({
+      employeeId: id,
+      businessOwnerId: employee.businessOwnerId,
+      isActive: true
+    }).select('rating totalReviews');
+
+    const serviceIds = services.map(service => service._id);
+
+    const totalReviews = services.reduce((sum, service) => sum + (service.totalReviews || 0), 0);
+    const weightedRating = totalReviews > 0
+      ? services.reduce((sum, service) => sum + ((service.rating || 0) * (service.totalReviews || 0)), 0) / totalReviews
+      : (services.length > 0
+        ? services.reduce((sum, service) => sum + (service.rating || 0), 0) / services.length
+        : 0);
+
+    const [
+      completedBookingCount,
+      completedAppointmentCount,
+      bookingIncomeAgg,
+      appointmentIncomeAgg
+    ] = await Promise.all([
+      BusinessOwnerBooking.countDocuments({
+        employeeServiceId: { $in: serviceIds },
+        bookingStatus: 'completed'
+      }),
+      BusinessOwnerAppointment.countDocuments({
+        employeeServiceId: { $in: serviceIds },
+        appointmentStatus: 'completed'
+      }),
+      BusinessOwnerBooking.aggregate([
+        { $match: { employeeServiceId: { $in: serviceIds }, paymentStatus: 'completed' } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ]),
+      BusinessOwnerAppointment.aggregate([
+        { $match: { employeeServiceId: { $in: serviceIds }, paymentStatus: 'completed' } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ])
+    ]);
+
+    const bookingIncome = bookingIncomeAgg[0]?.total || 0;
+    const appointmentIncome = appointmentIncomeAgg[0]?.total || 0;
+    const totalJobsCompleted = completedBookingCount + completedAppointmentCount;
+    const totalEarnings = bookingIncome + appointmentIncome;
+
+    const now = new Date();
+    const activeBookingStatuses = ['pending', 'confirmed', 'in_progress'];
+    const activeAppointmentStatuses = ['pending', 'confirmed', 'in_progress'];
+
+    const [upcomingBookings, upcomingAppointments] = await Promise.all([
+      BusinessOwnerBooking.find({
+        employeeServiceId: { $in: serviceIds },
+        bookingDate: { $gte: now },
+        bookingStatus: { $in: activeBookingStatuses }
+      })
+        .populate('userId', 'fullName')
+        .sort({ bookingDate: 1 })
+        .limit(upcomingLimit)
+        .select('userId bookingDate bookingStatus serviceSnapshot'),
+      BusinessOwnerAppointment.find({
+        employeeServiceId: { $in: serviceIds },
+        appointmentDate: { $gte: now },
+        appointmentStatus: { $in: activeAppointmentStatuses }
+      })
+        .populate('userId', 'fullName')
+        .sort({ appointmentDate: 1 })
+        .limit(upcomingLimit)
+        .select('userId appointmentDate appointmentStatus timeSlot serviceSnapshot')
+    ]);
+
+    const upcomingSchedules = [
+      ...upcomingBookings.map(booking => ({
+        type: 'booking',
+        userName: booking.userId?.fullName || 'Unknown',
+        date: booking.bookingDate,
+        time: null,
+        status: booking.bookingStatus,
+        title: booking.serviceSnapshot?.serviceName || 'Service'
+      })),
+      ...upcomingAppointments.map(appointment => ({
+        type: 'appointment',
+        userName: appointment.userId?.fullName || 'Unknown',
+        date: appointment.appointmentDate,
+        time: appointment.timeSlot ? {
+          start: appointment.timeSlot.startTime,
+          end: appointment.timeSlot.endTime
+        } : null,
+        status: appointment.appointmentStatus,
+        title: appointment.serviceSnapshot?.serviceName || appointment.serviceSnapshot?.headline || 'Service'
+      }))
+    ].sort((a, b) => new Date(a.date) - new Date(b.date))
+      .slice(0, upcomingLimit);
+
+    const [recentBookings, recentAppointments] = await Promise.all([
+      BusinessOwnerBooking.find({
+        employeeServiceId: { $in: serviceIds }
+      })
+        .populate('userId', 'fullName')
+        .sort({ createdAt: -1 })
+        .limit(ordersLimit)
+        .select('userId bookingStatus totalAmount createdAt serviceSnapshot'),
+      BusinessOwnerAppointment.find({
+        employeeServiceId: { $in: serviceIds }
+      })
+        .populate('userId', 'fullName')
+        .sort({ createdAt: -1 })
+        .limit(ordersLimit)
+        .select('userId appointmentStatus totalAmount createdAt serviceSnapshot')
+    ]);
+
+    const orders = [
+      ...recentBookings.map(booking => ({
+        type: 'booking',
+        orderId: booking._id,
+        userName: booking.userId?.fullName || 'Unknown',
+        title: booking.serviceSnapshot?.serviceName || 'Service',
+        status: booking.bookingStatus,
+        price: booking.totalAmount,
+        createdAt: booking.createdAt
+      })),
+      ...recentAppointments.map(appointment => ({
+        type: 'appointment',
+        orderId: appointment._id,
+        userName: appointment.userId?.fullName || 'Unknown',
+        title: appointment.serviceSnapshot?.serviceName || appointment.serviceSnapshot?.headline || 'Service',
+        status: appointment.appointmentStatus,
+        price: appointment.totalAmount,
+        createdAt: appointment.createdAt
+      }))
+    ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, ordersLimit);
+
+    const activities = orders.slice(0, 10).map(order => ({
+      type: order.type,
+      title: order.title,
+      status: order.status,
+      date: order.createdAt
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        overview: {
+          totalJobsCompleted,
+          rating: Math.round(weightedRating * 10) / 10,
+          totalEarnings,
+          joinedDate: employee.createdAt,
+          upcomingSchedules,
+          contractInformation: {
+            phoneNumber: employee.mobileNumber,
+            emailAddress: employee.email
+          }
+        },
+        activities,
+        orders
+      }
+    });
+  } catch (error) {
+    console.error('Get employee overview error:', error);
+    res.status(error.message === 'Employee not found or access denied' ? 404 : 500).json({
+      success: false,
+      message: error.message || 'An error occurred while fetching employee overview'
+    });
+  }
+};
+
+/**
  * Update employee information
  * PUT /api/business-owners/employees/:id
  */
 exports.updateEmployee = async (req, res) => {
   try {
     const { id } = req.params;
-    const { fullName, mobileNumber, email } = req.body;
+    const {
+      fullName,
+      mobileNumber,
+      email,
+      employeeServiceId,
+      headline,
+      description,
+      categories,
+      whyChooseService,
+      basePrice,
+      appointmentEnabled,
+      appointmentSlots
+    } = req.body;
+    const servicePhotoFile = req.files?.servicePhoto?.[0];
+    const profilePhotoFile = req.files?.profilePhoto?.[0];
 
     const { employee } = await verifyBusinessOwnerAccess(req, id);
 
@@ -357,15 +669,165 @@ exports.updateEmployee = async (req, res) => {
     if (mobileNumber) employee.mobileNumber = mobileNumber;
     if (email) employee.email = email;
 
+    if (profilePhotoFile) {
+      const profileUploadResult = await uploadToCloudinary(profilePhotoFile.path, 'employee-profiles');
+      if (!profileUploadResult.success) {
+        await removeLocalFile(profilePhotoFile);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload profile photo'
+        });
+      }
+      employee.profilePhoto = profileUploadResult.url;
+      await removeLocalFile(profilePhotoFile);
+    }
+
     await employee.save();
+
+    let updatedService = null;
+    if (
+      employeeServiceId ||
+      servicePhotoFile ||
+      headline ||
+      description ||
+      categories ||
+      whyChooseService ||
+      basePrice !== undefined ||
+      appointmentEnabled !== undefined ||
+      appointmentSlots
+    ) {
+      if (!employeeServiceId) {
+        await removeLocalFile(servicePhotoFile);
+        return res.status(400).json({
+          success: false,
+          message: 'employeeServiceId is required to update service details'
+        });
+      }
+
+      const service = await EmployeeService.findOne({
+        _id: employeeServiceId,
+        employeeId: employee._id,
+        isActive: true
+      });
+
+      if (!service) {
+        await removeLocalFile(servicePhotoFile);
+        return res.status(404).json({
+          success: false,
+          message: 'Employee service not found'
+        });
+      }
+
+      if (servicePhotoFile) {
+        const uploadResult = await uploadToCloudinary(servicePhotoFile.path, 'employee-services');
+
+        if (!uploadResult.success) {
+          await removeLocalFile(servicePhotoFile);
+          return res.status(500).json({
+            success: false,
+            message: 'Failed to upload service photo'
+          });
+        }
+
+        service.servicePhoto = uploadResult.url;
+        await removeLocalFile(servicePhotoFile);
+      }
+
+      if (headline) service.headline = headline;
+      if (description) service.description = description;
+
+      if (categories) {
+        let parsedCategories;
+        try {
+          parsedCategories = Array.isArray(categories) ? categories : JSON.parse(categories);
+        } catch (error) {
+          await removeLocalFile(servicePhotoFile);
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid categories format'
+          });
+        }
+
+        const existingCategories = await Category.find({
+          _id: { $in: parsedCategories },
+          isActive: true
+        });
+
+        if (existingCategories.length !== parsedCategories.length) {
+          await removeLocalFile(servicePhotoFile);
+          return res.status(400).json({
+            success: false,
+            message: 'One or more invalid categories'
+          });
+        }
+
+        service.categories = parsedCategories;
+      }
+
+      if (whyChooseService) {
+        try {
+          service.whyChooseService = typeof whyChooseService === 'string'
+            ? JSON.parse(whyChooseService)
+            : whyChooseService;
+        } catch (error) {
+          await removeLocalFile(servicePhotoFile);
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid whyChooseService format'
+          });
+        }
+      }
+
+      if (appointmentEnabled !== undefined) {
+        const isAppointmentEnabled = appointmentEnabled === 'true' || appointmentEnabled === true;
+        service.appointmentEnabled = isAppointmentEnabled;
+
+        if (isAppointmentEnabled) {
+          if (!appointmentSlots) {
+            await removeLocalFile(servicePhotoFile);
+            return res.status(400).json({
+              success: false,
+              message: 'appointmentSlots is required when appointmentEnabled is true'
+            });
+          }
+
+          try {
+            service.appointmentSlots = Array.isArray(appointmentSlots)
+              ? appointmentSlots
+              : JSON.parse(appointmentSlots);
+          } catch (error) {
+            await removeLocalFile(servicePhotoFile);
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid appointmentSlots format'
+            });
+          }
+          service.basePrice = 0;
+        } else if (basePrice !== undefined) {
+          service.basePrice = parseFloat(basePrice);
+          service.appointmentSlots = [];
+        }
+      } else if (basePrice !== undefined && service.appointmentEnabled === false) {
+        service.basePrice = parseFloat(basePrice);
+      }
+
+      updatedService = await service.save();
+    }
 
     res.status(200).json({
       success: true,
       message: 'Employee updated successfully',
-      data: employee
+      data: {
+        employee,
+        service: updatedService
+      }
     });
 
   } catch (error) {
+    const servicePhotoFile = req.files?.servicePhoto?.[0];
+    const profilePhotoFile = req.files?.profilePhoto?.[0];
+    await removeLocalFile(servicePhotoFile);
+    await removeLocalFile(profilePhotoFile);
     console.error('Update employee error:', error);
     res.status(error.message === 'Employee not found or access denied' ? 404 : 500).json({
       success: false,

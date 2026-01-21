@@ -476,6 +476,9 @@ exports.updateEventManagerProfile = async (req, res) => {
       email,
       phoneNumber,
       dateOfBirth,
+      birthdate,
+      category,
+      businessAddress,
       currentPassword,
       newPassword,
       confirmPassword
@@ -621,8 +624,9 @@ exports.updateEventManagerProfile = async (req, res) => {
     await user.save();
 
     // Update event manager specific fields
-    if (dateOfBirth) {
-      const dob = new Date(dateOfBirth);
+    const dobInput = dateOfBirth || birthdate;
+    if (dobInput) {
+      const dob = new Date(dobInput);
       if (isNaN(dob.getTime())) {
         return res.status(400).json({
           success: false,
@@ -636,6 +640,12 @@ exports.updateEventManagerProfile = async (req, res) => {
         });
       }
       eventManager.dateOfBirth = dob;
+    }
+    if (category !== undefined) {
+      eventManager.category = category;
+    }
+    if (businessAddress !== undefined) {
+      eventManager.businessAddress = businessAddress;
     }
 
     await eventManager.save();
@@ -656,7 +666,9 @@ exports.updateEventManagerProfile = async (req, res) => {
           id: eventManager._id,
           dateOfBirth: eventManager.dateOfBirth,
           idType: eventManager.idType,
-          identificationNumber: eventManager.identificationNumber
+          identificationNumber: eventManager.identificationNumber,
+          category: eventManager.category,
+          businessAddress: eventManager.businessAddress
         }
       }
     });

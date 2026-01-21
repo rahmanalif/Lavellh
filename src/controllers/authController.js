@@ -795,6 +795,7 @@ const getRecentProviders = async (req, res) => {
     const Booking = require('../models/Booking');
     const Appointment = require('../models/Appointment');
     const Provider = require('../models/Provider');
+    const Service = require('../models/Service');
 
     // Get unique provider IDs from bookings (including pending)
     const bookingProviders = await Booking.distinct('providerId', {
@@ -842,7 +843,7 @@ const getRecentProviders = async (req, res) => {
           bookingStatus: { $in: ['pending', 'confirmed', 'in_progress', 'completed'] }
         })
         .sort({ createdAt: -1 })
-        .select('bookingDate createdAt bookingStatus');
+        .select('bookingDate createdAt bookingStatus serviceId serviceSnapshot');
 
         // Find most recent appointment (including pending)
         const lastAppointment = await Appointment.findOne({
@@ -851,31 +852,84 @@ const getRecentProviders = async (req, res) => {
           appointmentStatus: { $in: ['pending', 'confirmed', 'in_progress', 'completed'] }
         })
         .sort({ createdAt: -1 })
-        .select('appointmentDate createdAt appointmentStatus');
+        .select('appointmentDate createdAt appointmentStatus serviceId serviceSnapshot selectedSlot');
 
         // Determine which is more recent
         let lastServiceDate = null;
         let lastServiceType = null;
         let lastServiceStatus = null;
+        let lastServiceInfo = null;
 
         if (lastBooking && lastAppointment) {
           if (lastBooking.createdAt > lastAppointment.createdAt) {
             lastServiceDate = lastBooking.bookingDate;
             lastServiceType = 'booking';
             lastServiceStatus = lastBooking.bookingStatus;
+            lastServiceInfo = {
+              id: lastBooking.serviceId,
+              name: lastBooking.serviceSnapshot?.serviceName || null,
+              photo: lastBooking.serviceSnapshot?.servicePhoto || null,
+              category: lastBooking.serviceSnapshot?.category || null,
+              basePrice: lastBooking.serviceSnapshot?.basePrice ?? null
+            };
           } else {
             lastServiceDate = lastAppointment.appointmentDate;
             lastServiceType = 'appointment';
             lastServiceStatus = lastAppointment.appointmentStatus;
+            lastServiceInfo = {
+              id: lastAppointment.serviceId,
+              name: lastAppointment.serviceSnapshot?.serviceName || lastAppointment.serviceSnapshot?.headline || null,
+              photo: lastAppointment.serviceSnapshot?.servicePhoto || null,
+              category: lastAppointment.serviceSnapshot?.category || null,
+              price: lastAppointment.selectedSlot?.price ?? null,
+              duration: lastAppointment.selectedSlot?.duration ?? null,
+              durationUnit: lastAppointment.selectedSlot?.durationUnit || null
+            };
           }
         } else if (lastBooking) {
           lastServiceDate = lastBooking.bookingDate;
           lastServiceType = 'booking';
           lastServiceStatus = lastBooking.bookingStatus;
+          lastServiceInfo = {
+            id: lastBooking.serviceId,
+            name: lastBooking.serviceSnapshot?.serviceName || null,
+            photo: lastBooking.serviceSnapshot?.servicePhoto || null,
+            category: lastBooking.serviceSnapshot?.category || null,
+            basePrice: lastBooking.serviceSnapshot?.basePrice ?? null
+          };
         } else if (lastAppointment) {
           lastServiceDate = lastAppointment.appointmentDate;
           lastServiceType = 'appointment';
           lastServiceStatus = lastAppointment.appointmentStatus;
+          lastServiceInfo = {
+            id: lastAppointment.serviceId,
+            name: lastAppointment.serviceSnapshot?.serviceName || lastAppointment.serviceSnapshot?.headline || null,
+            photo: lastAppointment.serviceSnapshot?.servicePhoto || null,
+            category: lastAppointment.serviceSnapshot?.category || null,
+            price: lastAppointment.selectedSlot?.price ?? null,
+            duration: lastAppointment.selectedSlot?.duration ?? null,
+            durationUnit: lastAppointment.selectedSlot?.durationUnit || null
+          };
+        }
+
+        if (lastServiceInfo && !lastServiceInfo.description && lastServiceInfo.id) {
+          const serviceDoc = await Service.findById(lastServiceInfo.id)
+            .select('description headline servicePhoto category basePrice');
+          if (serviceDoc) {
+            lastServiceInfo.description = serviceDoc.description || null;
+            if (!lastServiceInfo.name) {
+              lastServiceInfo.name = serviceDoc.headline || null;
+            }
+            if (!lastServiceInfo.photo) {
+              lastServiceInfo.photo = serviceDoc.servicePhoto || null;
+            }
+            if (!lastServiceInfo.category) {
+              lastServiceInfo.category = serviceDoc.category || null;
+            }
+            if (lastServiceInfo.basePrice === null || lastServiceInfo.basePrice === undefined) {
+              lastServiceInfo.basePrice = serviceDoc.basePrice ?? null;
+            }
+          }
         }
 
         return {
@@ -899,7 +953,8 @@ const getRecentProviders = async (req, res) => {
           lastService: {
             date: lastServiceDate,
             type: lastServiceType,
-            status: lastServiceStatus
+            status: lastServiceStatus,
+            service: lastServiceInfo
           },
           joinedAt: provider.createdAt
         };

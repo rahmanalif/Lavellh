@@ -7,6 +7,7 @@ const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudin
 const crypto = require('crypto');
 const { sendOTPEmail } = require('../utility/emailService');
 const Settings = require('../models/Settings');
+const BusinessOwnerNotification = require('../models/BusinessOwnerNotification');
 
 /**
  * Register a new business owner
@@ -683,6 +684,364 @@ exports.updateBusinessOwnerProfile = async (req, res) => {
       success: false,
       message: 'An error occurred while updating business owner profile',
       error: error.message
+    });
+  }
+};
+
+/**
+ * Get business owner stats
+ * GET /api/business-owners/stats
+ */
+exports.getBusinessOwnerStats = async (req, res) => {
+  try {
+    const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
+    const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
+    const Employee = require('../models/Employee');
+
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    const businessOwnerId = businessOwner._id;
+    const activeBookingStatuses = ['pending', 'confirmed', 'in_progress'];
+    const activeAppointmentStatuses = ['pending', 'confirmed', 'in_progress'];
+
+    const now = new Date();
+    const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const endOfPrevMonth = new Date(startOfThisMonth.getTime() - 1);
+
+    const [
+      bookingCount,
+      appointmentCount,
+      employeeCount,
+      activeBookingCount,
+      activeAppointmentCount,
+      bookingIncomeAgg,
+      appointmentIncomeAgg,
+      thisMonthBookingCount,
+      thisMonthAppointmentCount,
+      prevMonthBookingCount,
+      prevMonthAppointmentCount,
+      thisMonthBookingIncomeAgg,
+      thisMonthAppointmentIncomeAgg,
+      prevMonthBookingIncomeAgg,
+      prevMonthAppointmentIncomeAgg,
+      thisMonthActiveBookingCount,
+      thisMonthActiveAppointmentCount,
+      prevMonthActiveBookingCount,
+      prevMonthActiveAppointmentCount,
+      thisMonthEmployeeCount,
+      prevMonthEmployeeCount
+    ] = await Promise.all([
+      BusinessOwnerBooking.countDocuments({ businessOwnerId }),
+      BusinessOwnerAppointment.countDocuments({ businessOwnerId }),
+      Employee.countDocuments({ businessOwnerId, isActive: true }),
+      BusinessOwnerBooking.countDocuments({
+        businessOwnerId,
+        bookingStatus: { $in: activeBookingStatuses }
+      }),
+      BusinessOwnerAppointment.countDocuments({
+        businessOwnerId,
+        appointmentStatus: { $in: activeAppointmentStatuses }
+      }),
+      BusinessOwnerBooking.aggregate([
+        { $match: { businessOwnerId, paymentStatus: 'completed' } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ]),
+      BusinessOwnerAppointment.aggregate([
+        { $match: { businessOwnerId, paymentStatus: 'completed' } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ]),
+      BusinessOwnerBooking.countDocuments({
+        businessOwnerId,
+        createdAt: { $gte: startOfThisMonth }
+      }),
+      BusinessOwnerAppointment.countDocuments({
+        businessOwnerId,
+        createdAt: { $gte: startOfThisMonth }
+      }),
+      BusinessOwnerBooking.countDocuments({
+        businessOwnerId,
+        createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth }
+      }),
+      BusinessOwnerAppointment.countDocuments({
+        businessOwnerId,
+        createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth }
+      }),
+      BusinessOwnerBooking.aggregate([
+        { $match: { businessOwnerId, paymentStatus: 'completed', createdAt: { $gte: startOfThisMonth } } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ]),
+      BusinessOwnerAppointment.aggregate([
+        { $match: { businessOwnerId, paymentStatus: 'completed', createdAt: { $gte: startOfThisMonth } } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ]),
+      BusinessOwnerBooking.aggregate([
+        { $match: { businessOwnerId, paymentStatus: 'completed', createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth } } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ]),
+      BusinessOwnerAppointment.aggregate([
+        { $match: { businessOwnerId, paymentStatus: 'completed', createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth } } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ]),
+      BusinessOwnerBooking.countDocuments({
+        businessOwnerId,
+        bookingStatus: { $in: activeBookingStatuses },
+        createdAt: { $gte: startOfThisMonth }
+      }),
+      BusinessOwnerAppointment.countDocuments({
+        businessOwnerId,
+        appointmentStatus: { $in: activeAppointmentStatuses },
+        createdAt: { $gte: startOfThisMonth }
+      }),
+      BusinessOwnerBooking.countDocuments({
+        businessOwnerId,
+        bookingStatus: { $in: activeBookingStatuses },
+        createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth }
+      }),
+      BusinessOwnerAppointment.countDocuments({
+        businessOwnerId,
+        appointmentStatus: { $in: activeAppointmentStatuses },
+        createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth }
+      }),
+      Employee.countDocuments({
+        businessOwnerId,
+        isActive: true,
+        createdAt: { $gte: startOfThisMonth }
+      }),
+      Employee.countDocuments({
+        businessOwnerId,
+        isActive: true,
+        createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth }
+      })
+    ]);
+
+    const bookingIncome = bookingIncomeAgg[0]?.total || 0;
+    const appointmentIncome = appointmentIncomeAgg[0]?.total || 0;
+    const thisMonthBookingIncome = thisMonthBookingIncomeAgg[0]?.total || 0;
+    const thisMonthAppointmentIncome = thisMonthAppointmentIncomeAgg[0]?.total || 0;
+    const prevMonthBookingIncome = prevMonthBookingIncomeAgg[0]?.total || 0;
+    const prevMonthAppointmentIncome = prevMonthAppointmentIncomeAgg[0]?.total || 0;
+
+    const totalBookings = bookingCount + appointmentCount;
+    const totalIncome = bookingIncome + appointmentIncome;
+    const totalEmployeesActive = employeeCount;
+    const totalActiveOrders = activeBookingCount + activeAppointmentCount;
+
+    const thisMonthBookings = thisMonthBookingCount + thisMonthAppointmentCount;
+    const prevMonthBookings = prevMonthBookingCount + prevMonthAppointmentCount;
+    const thisMonthIncome = thisMonthBookingIncome + thisMonthAppointmentIncome;
+    const prevMonthIncome = prevMonthBookingIncome + prevMonthAppointmentIncome;
+    const thisMonthActiveOrders = thisMonthActiveBookingCount + thisMonthActiveAppointmentCount;
+    const prevMonthActiveOrders = prevMonthActiveBookingCount + prevMonthActiveAppointmentCount;
+
+    const calcPercentChange = (current, previous) => {
+      if (previous === 0) {
+        return current === 0 ? 0 : 100;
+      }
+      return Math.round(((current - previous) / previous) * 100);
+    };
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalBookings,
+        totalIncome,
+        totalEmployeesActive,
+        totalActiveOrders,
+        growth: {
+          totalBookings: calcPercentChange(thisMonthBookings, prevMonthBookings),
+          totalIncome: calcPercentChange(thisMonthIncome, prevMonthIncome),
+          totalEmployeesActive: calcPercentChange(thisMonthEmployeeCount, prevMonthEmployeeCount),
+          totalActiveOrders: calcPercentChange(thisMonthActiveOrders, prevMonthActiveOrders)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get business owner stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching business owner stats',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get business owner activities
+ * GET /api/business-owners/activities
+ * Query params:
+ *  - range: today | week | month | all (default: all)
+ *  - status: all | completed | cancelled (default: all)
+ *  - limit: max items to return (default: 50, max: 200)
+ */
+exports.getBusinessOwnerActivities = async (req, res) => {
+  try {
+    const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
+    const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
+
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    const range = (req.query.range || 'all').toLowerCase();
+    const statusFilter = (req.query.status || 'all').toLowerCase();
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+
+    const now = new Date();
+    let startDate = null;
+    if (range === 'today') {
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (range === 'week') {
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    } else if (range === 'month') {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    } else if (range !== 'all') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid range filter. Use today, week, month, or all.'
+      });
+    }
+
+    const bookingQuery = { businessOwnerId: businessOwner._id };
+    const appointmentQuery = { businessOwnerId: businessOwner._id };
+
+    if (startDate) {
+      bookingQuery.updatedAt = { $gte: startDate };
+      appointmentQuery.updatedAt = { $gte: startDate };
+    }
+
+    if (statusFilter === 'completed') {
+      bookingQuery.bookingStatus = 'completed';
+      appointmentQuery.appointmentStatus = 'completed';
+    } else if (statusFilter === 'cancelled') {
+      bookingQuery.bookingStatus = { $in: ['cancelled', 'rejected'] };
+      appointmentQuery.appointmentStatus = { $in: ['cancelled', 'rejected', 'no_show'] };
+    } else if (statusFilter !== 'all') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status filter. Use all, completed, or cancelled.'
+      });
+    }
+
+    const [bookings, appointments] = await Promise.all([
+      BusinessOwnerBooking.find(bookingQuery)
+        .populate('userId', 'fullName profilePicture')
+        .sort({ updatedAt: -1 })
+        .limit(limit)
+        .select('userId bookingStatus paymentStatus totalAmount serviceSnapshot updatedAt createdAt'),
+      BusinessOwnerAppointment.find(appointmentQuery)
+        .populate('userId', 'fullName profilePicture')
+        .sort({ updatedAt: -1 })
+        .limit(limit)
+        .select('userId appointmentStatus paymentStatus totalAmount serviceSnapshot updatedAt createdAt')
+    ]);
+
+    const resolveActivity = (status, paymentStatus) => {
+      if (paymentStatus === 'completed') return 'payment_received';
+      if (status === 'completed') return 'order_completed';
+      if (['cancelled', 'rejected', 'no_show'].includes(status)) return 'order_canceled';
+      return 'new_booking_received';
+    };
+
+    const activities = [
+      ...bookings.map((booking) => ({
+        orderId: booking._id,
+        type: 'booking',
+        userName: booking.userId?.fullName || 'Unknown',
+        userProfilePicture: booking.userId?.profilePicture || null,
+        status: booking.bookingStatus,
+        activity: resolveActivity(booking.bookingStatus, booking.paymentStatus),
+        price: booking.totalAmount,
+        hoursAgo: Math.floor((now - booking.updatedAt) / (60 * 60 * 1000)),
+        updatedAt: booking.updatedAt,
+        title: booking.serviceSnapshot?.serviceName || 'Service'
+      })),
+      ...appointments.map((appointment) => ({
+        orderId: appointment._id,
+        type: 'appointment',
+        userName: appointment.userId?.fullName || 'Unknown',
+        userProfilePicture: appointment.userId?.profilePicture || null,
+        status: appointment.appointmentStatus,
+        activity: resolveActivity(appointment.appointmentStatus, appointment.paymentStatus),
+        price: appointment.totalAmount,
+        hoursAgo: Math.floor((now - appointment.updatedAt) / (60 * 60 * 1000)),
+        updatedAt: appointment.updatedAt,
+        title: appointment.serviceSnapshot?.serviceName || appointment.serviceSnapshot?.headline || 'Service'
+      }))
+    ]
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+      .slice(0, limit);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        activities,
+        count: activities.length
+      }
+    });
+  } catch (error) {
+    console.error('Get business owner activities error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'An error occurred while fetching activities'
+    });
+  }
+};
+
+/**
+ * @desc    Get business owner notifications
+ * @route   GET /api/business-owners/notifications
+ * @access  Private (Business Owner only)
+ */
+exports.getBusinessOwnerNotifications = async (req, res) => {
+  try {
+    const { isRead, page = 1, limit = 20 } = req.query;
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    const query = { businessOwnerId: businessOwner._id };
+    if (isRead !== undefined) {
+      query.isRead = isRead === 'true';
+    }
+
+    const skip = (page - 1) * limit;
+
+    const notifications = await BusinessOwnerNotification.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit, 10));
+
+    const total = await BusinessOwnerNotification.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      count: notifications.length,
+      total,
+      currentPage: parseInt(page, 10),
+      totalPages: Math.ceil(total / limit),
+      data: notifications
+    });
+  } catch (error) {
+    console.error('Get business owner notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Error fetching notifications'
     });
   }
 };

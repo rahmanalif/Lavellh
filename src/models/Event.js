@@ -118,6 +118,20 @@ const eventSchema = new mongoose.Schema({
     min: 0
   },
 
+  // Event rating summary (optional, used for sorting)
+  rating: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 5
+  },
+
+  totalReviews: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+
   // Confirmation Code Configuration
   confirmationCodePrefix: {
     type: String,
@@ -143,6 +157,12 @@ const eventSchema = new mongoose.Schema({
     type: String,
     enum: ['draft', 'published', 'cancelled', 'completed'],
     default: 'draft'
+  },
+
+  // Stored ticket sales active flag (kept in sync on save)
+  isTicketSalesActiveStored: {
+    type: Boolean,
+    default: false
   },
 
   // Publication Date
@@ -185,6 +205,12 @@ eventSchema.index({
 eventSchema.index({
   status: 1,
   ticketsSold: -1
+});
+
+eventSchema.index({
+  status: 1,
+  ticketsSold: -1,
+  rating: -1
 });
 
 eventSchema.index({
@@ -234,6 +260,17 @@ eventSchema.virtual('eventManager', {
 eventSchema.set('toJSON', { virtuals: true });
 eventSchema.set('toObject', { virtuals: true });
 
+function computeTicketSalesActive(eventDoc) {
+  const now = new Date();
+  if (!eventDoc.ticketSalesStartDate || !eventDoc.ticketSalesEndDate) {
+    return false;
+  }
+  return eventDoc.status === 'published' &&
+    now >= eventDoc.ticketSalesStartDate &&
+    now <= eventDoc.ticketSalesEndDate &&
+    eventDoc.ticketsSold < eventDoc.maximumNumberOfTickets;
+}
+
 // Pre-save middleware to validate dates
 eventSchema.pre('save', function(next) {
   // Ensure all date validations are met
@@ -248,6 +285,8 @@ eventSchema.pre('save', function(next) {
   if (this.eventStartDateTime >= this.eventEndDateTime) {
     return next(new Error('Event start date & time must be before end date & time'));
   }
+
+  this.isTicketSalesActiveStored = computeTicketSalesActive(this);
 
   next();
 });

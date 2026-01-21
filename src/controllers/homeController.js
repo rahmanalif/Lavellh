@@ -500,7 +500,7 @@ exports.getNearbyProvidersByCategory = async (req, res) => {
           occupation: provider.occupation
         }))
       };
-    }).filter(cat => cat.providerCount > 0); // Only include categories with providers
+    });
 
     // Find providers without any category assigned
     const providersWithoutCategory = providersWithDistance.filter(provider =>
@@ -553,6 +553,169 @@ exports.getNearbyProvidersByCategory = async (req, res) => {
 
   } catch (error) {
     console.error('Get nearby providers by category error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching nearby providers',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get nearby providers for a specific category
+ * GET /api/home/nearby-providers/category/:categoryId
+ * Query params:
+ *   - latitude: User's current latitude (required)
+ *   - longitude: User's current longitude (required)
+ *   - maxDistance: Maximum distance in meters (optional, default: 10000 = 10km)
+ */
+exports.getNearbyProvidersByCategoryId = async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const {
+      latitude,
+      longitude,
+      maxDistance = 10000 // 10km default
+    } = req.query;
+
+    if (!latitude || !longitude) {
+      return res.status(400).json({
+        success: false,
+        message: 'Latitude and longitude are required'
+      });
+    }
+
+    const userLat = parseFloat(latitude);
+    const userLon = parseFloat(longitude);
+
+    if (isNaN(userLat) || isNaN(userLon)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid latitude or longitude'
+      });
+    }
+
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid category id'
+      });
+    }
+
+    const Category = require('../models/Category');
+    const category = await Category.findById(categoryId).select('_id');
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    const services = await Service.find({
+      category: categoryId,
+      isActive: true
+    })
+      .populate('category', 'name icon description');
+
+    const providerIds = [...new Set(services.map(service => service.providerId.toString()))];
+
+    if (providerIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'Nearby providers fetched successfully',
+        data: {
+          providers: [],
+          totalProviders: 0,
+          searchRadius: {
+            meters: parseInt(maxDistance),
+            kilometers: (parseInt(maxDistance) / 1000).toFixed(1)
+          },
+          userLocation: {
+            latitude: userLat,
+            longitude: userLon
+          }
+        }
+      });
+    }
+
+    const providers = await Provider.find({
+      _id: { $in: providerIds },
+      verificationStatus: 'verified',
+      isAvailable: true
+    })
+      .populate({
+        path: 'userId',
+        select: 'fullName profilePicture location'
+      })
+      .populate('categories', 'name icon description');
+
+    const servicesByProvider = new Map();
+    services.forEach((service) => {
+      const key = service.providerId.toString();
+      if (!servicesByProvider.has(key)) {
+        servicesByProvider.set(key, []);
+      }
+      servicesByProvider.get(key).push(service);
+    });
+
+    const providersWithDistance = providers
+      .map(provider => {
+        const providerUser = provider.userId;
+        if (!providerUser || !providerUser.location ||
+            !providerUser.location.coordinates ||
+            providerUser.location.coordinates.length !== 2) {
+          return null;
+        }
+
+        const [providerLon, providerLat] = providerUser.location.coordinates;
+        const distance = calculateDistance(
+          userLat,
+          userLon,
+          providerLat,
+          providerLon
+        );
+
+        if (distance > maxDistance) {
+          return null;
+        }
+
+        const providerObj = provider.toObject({ virtuals: true });
+        const userObj = providerUser?.toObject ? providerUser.toObject() : providerUser;
+
+        return {
+          provider: {
+            ...providerObj,
+            user: userObj
+          },
+          services: servicesByProvider.get(provider._id.toString()) || [],
+          distance: Math.round(distance),
+          distanceKm: (distance / 1000).toFixed(1),
+          address: providerUser.location?.address || 'Address not available'
+        };
+      })
+      .filter(item => item !== null);
+
+    providersWithDistance.sort((a, b) => a.distance - b.distance);
+
+    res.status(200).json({
+      success: true,
+      message: 'Nearby providers fetched successfully',
+      data: {
+        providers: providersWithDistance,
+        totalProviders: providersWithDistance.length,
+        searchRadius: {
+          meters: parseInt(maxDistance),
+          kilometers: (parseInt(maxDistance) / 1000).toFixed(1)
+        },
+        userLocation: {
+          latitude: userLat,
+          longitude: userLon
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get nearby providers by category id error:', error);
     res.status(500).json({
       success: false,
       message: 'An error occurred while fetching nearby providers',
@@ -638,6 +801,8 @@ function formatEventsForDisplay(events) {
     ticketPrice: event.ticketPrice,
     ticketsAvailable: event.ticketsAvailable,
     ticketsSold: event.ticketsSold,
+    rating: event.rating || 0,
+    totalReviews: event.totalReviews || 0,
     eventManagerName: event.eventManagerName,
     formattedDate: formatEventDate(event.eventStartDateTime),
     formattedTime: formatEventTime(event.eventStartDateTime, event.eventEndDateTime)
@@ -655,20 +820,20 @@ exports.getPopularEvents = async (req, res) => {
   try {
     const { limit = 20, eventType } = req.query;
 
-    const events = await Event.getAvailableEvents({
-      eventType,
-      limit: Math.min(parseInt(limit), 100),
-      sortBy: 'ticketsSold'
-    });
+    const query = { status: 'published' };
+    if (eventType) {
+      query.eventType = eventType;
+    }
 
-    // Filter out sold-out events (isSoldOut is a virtual property)
-    const availableEvents = events.filter(event => !event.isSoldOut);
+    const events = await Event.find(query)
+      .sort({ ticketsSold: -1, rating: -1, eventStartDateTime: 1 })
+      .limit(Math.min(parseInt(limit), 100));
 
     res.status(200).json({
       success: true,
       data: {
-        events: formatEventsForDisplay(availableEvents),
-        count: availableEvents.length
+        events: formatEventsForDisplay(events),
+        count: events.length
       }
     });
   } catch (error) {

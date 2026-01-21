@@ -39,6 +39,14 @@ router.get('/available-slots/:serviceId', bookingController.getAvailableSlots);
 router.get('/:id', auth, bookingController.getAppointmentById);
 
 /**
+ * @route   PATCH /api/appointments/:id/reschedule
+ * @desc    Reschedule an appointment
+ * @access  Private (Owner only)
+ * @body    { appointmentDate, timeSlot: { startTime, endTime }, userNotes }
+ */
+router.patch('/:id/reschedule', auth, bookingController.rescheduleAppointment);
+
+/**
  * @route   PATCH /api/appointments/:id/cancel
  * @desc    Cancel an appointment
  * @access  Private (Owner only)

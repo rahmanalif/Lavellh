@@ -111,6 +111,28 @@ router.put('/business-profile', auth, uploadBusinessProfileFiles, handleUploadEr
  */
 router.delete('/business-profile/photos/:photoIndex', auth, businessOwnerController.deleteBusinessProfilePhoto);
 
+/**
+ * @route   GET /api/business-owners/stats
+ * @desc    Get business owner stats
+ * @access  Private (Business Owner only)
+ */
+router.get('/stats', auth, businessOwnerController.getBusinessOwnerStats);
+
+/**
+ * @route   GET /api/business-owners/activities
+ * @desc    Get business owner activities
+ * @access  Private (Business Owner only)
+ */
+router.get('/activities', auth, businessOwnerController.getBusinessOwnerActivities);
+
+/**
+ * @route   GET /api/business-owners/notifications
+ * @desc    Get business owner notifications
+ * @access  Private (Business Owner only)
+ * @query   isRead, page, limit
+ */
+router.get('/notifications', auth, businessOwnerController.getBusinessOwnerNotifications);
+
 // ============ BANK INFORMATION ROUTES ============
 
 /**

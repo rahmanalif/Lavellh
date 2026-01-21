@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const employeeController = require('../controllers/employeeController');
-const { uploadEmployeeServicePhoto, handleUploadError } = require('../middleware/upload');
+const { uploadEmployeeServicePhoto, uploadEmployeeFiles, handleUploadError } = require('../middleware/upload');
 const auth = require('../middleware/auth');
 
 /**
@@ -12,7 +12,7 @@ const auth = require('../middleware/auth');
 router.post(
   '/',
   auth,
-  uploadEmployeeServicePhoto,
+  uploadEmployeeFiles,
   handleUploadError,
   employeeController.createEmployeeWithService
 );
@@ -26,6 +26,29 @@ router.get(
   '/',
   auth,
   employeeController.listEmployees
+);
+
+/**
+ * @route   GET /api/business-owners/employees/search
+ * @desc    Search employees for business owner
+ * @access  Private (Business Owner only)
+ * @query   q, page, limit
+ */
+router.get(
+  '/search',
+  auth,
+  employeeController.searchEmployees
+);
+
+/**
+ * @route   GET /api/business-owners/employees/:id/overview
+ * @desc    Get employee overview, activities, and orders
+ * @access  Private (Business Owner only)
+ */
+router.get(
+  '/:id/overview',
+  auth,
+  employeeController.getEmployeeOverview
 );
 
 /**
@@ -47,6 +70,8 @@ router.get(
 router.put(
   '/:id',
   auth,
+  uploadEmployeeFiles,
+  handleUploadError,
   employeeController.updateEmployee
 );
 

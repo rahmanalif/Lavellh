@@ -118,6 +118,12 @@ const uploadEventImage = generalUpload.single('eventImage');
 // Middleware for employee service photo upload
 const uploadEmployeeServicePhoto = generalUpload.single('servicePhoto');
 
+// Middleware for employee profile + service photo upload
+const uploadEmployeeFiles = generalUpload.fields([
+  { name: 'profilePhoto', maxCount: 1 },
+  { name: 'servicePhoto', maxCount: 1 }
+]);
+
 // Middleware for bank verification document upload
 const uploadBankVerificationDocument = generalUpload.single('bankVerificationDocument');
 
@@ -162,6 +168,7 @@ module.exports = {
   uploadCategoryIcon,
   uploadEventImage,
   uploadEmployeeServicePhoto,
+  uploadEmployeeFiles,
   uploadBusinessProfileFiles,
   uploadBankVerificationDocument,
   handleUploadError

@@ -29,6 +29,10 @@ const employeeSchema = new mongoose.Schema({
     lowercase: true,
     match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email address']
   },
+  profilePhoto: {
+    type: String,
+    trim: true
+  },
   // Status
   isActive: {
     type: Boolean,

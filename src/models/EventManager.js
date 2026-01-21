@@ -49,6 +49,22 @@ const eventManagerSchema = new mongoose.Schema({
       required: false,
       default: null
     }
+  },
+
+  // Category (text field)
+  category: {
+    type: String,
+    trim: true,
+    maxlength: [100, 'Category cannot exceed 100 characters'],
+    default: ''
+  },
+
+  // Business Address
+  businessAddress: {
+    type: String,
+    trim: true,
+    maxlength: [200, 'Business address cannot exceed 200 characters'],
+    default: ''
   }
 }, {
   timestamps: true

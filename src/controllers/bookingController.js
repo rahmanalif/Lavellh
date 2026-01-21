@@ -542,6 +542,95 @@ exports.cancelAppointment = async (req, res) => {
 };
 
 /**
+ * @desc    Reschedule appointment (user)
+ * @route   PATCH /api/appointments/:id/reschedule
+ * @access  Private (User)
+ */
+exports.rescheduleAppointment = async (req, res) => {
+  try {
+    const { appointmentDate, timeSlot, userNotes } = req.body;
+
+    if (!appointmentDate || !timeSlot) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide appointmentDate and timeSlot'
+      });
+    }
+
+    if (!timeSlot.startTime || !timeSlot.endTime) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide both startTime and endTime in timeSlot'
+      });
+    }
+
+    const appointment = await Appointment.findById(req.params.id);
+
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Appointment not found'
+      });
+    }
+
+    if (appointment.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to reschedule this appointment'
+      });
+    }
+
+    if (appointment.appointmentStatus !== 'in_progress') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot reschedule a ${appointment.appointmentStatus} appointment`
+      });
+    }
+
+    const oldDate = appointment.appointmentDate;
+    const oldTimeSlot = { ...appointment.timeSlot };
+
+    appointment.appointmentDate = new Date(appointmentDate);
+    appointment.timeSlot = {
+      startTime: timeSlot.startTime,
+      endTime: timeSlot.endTime
+    };
+
+    const hasConflict = await appointment.hasTimeConflict();
+    if (hasConflict) {
+      return res.status(409).json({
+        success: false,
+        message: 'The new time slot conflicts with another appointment. Please choose a different time.'
+      });
+    }
+
+    const rescheduleNote = `Rescheduled by user from ${oldDate.toLocaleDateString()} (${oldTimeSlot.startTime}-${oldTimeSlot.endTime}) to ${appointment.appointmentDate.toLocaleDateString()} (${timeSlot.startTime}-${timeSlot.endTime})`;
+    appointment.userNotes = userNotes
+      ? `${userNotes}\n\n${rescheduleNote}`
+      : rescheduleNote;
+
+    // Move back to pending for provider confirmation after reschedule
+    appointment.appointmentStatus = 'pending';
+
+    await appointment.save();
+
+    await appointment.populate('user', 'fullName email phoneNumber profilePicture');
+
+    res.status(200).json({
+      success: true,
+      message: 'Appointment rescheduled successfully',
+      data: appointment
+    });
+  } catch (error) {
+    console.error('Reschedule appointment error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Error rescheduling appointment'
+    });
+  }
+};
+
+/**
  * @desc    Get available time slots for a service on a specific date
  * @route   GET /api/appointments/available-slots/:serviceId
  * @access  Public
