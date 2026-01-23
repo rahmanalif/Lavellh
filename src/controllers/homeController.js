@@ -469,67 +469,75 @@ exports.getNearbyProvidersByCategory = async (req, res) => {
       })
       .filter(item => item !== null);
 
-    // Group providers by category
-    const categoriesWithProviders = categories.map(category => {
-      // Find all providers that belong to this category
-      const categoryProviders = providersWithDistance.filter(provider =>
-        provider.categories && provider.categories.length > 0 &&
-        provider.categories.some(cat => cat._id.toString() === category._id.toString())
-      );
+    const providerIds = providersWithDistance.map(provider => provider.providerId);
+    const providerDistanceMap = new Map(
+      providersWithDistance.map(provider => [provider.providerId.toString(), provider.distance])
+    );
 
-      // Sort providers by distance (closest first)
-      categoryProviders.sort((a, b) => a.distance - b.distance);
+    const services = await Service.find({
+      providerId: { $in: providerIds },
+      isActive: true
+    }).select('providerId category');
+
+    const categoryProviderMap = new Map();
+    services.forEach((service) => {
+      if (!service.category) return;
+      const categoryId = service.category.toString();
+      if (!categoryProviderMap.has(categoryId)) {
+        categoryProviderMap.set(categoryId, new Set());
+      }
+      categoryProviderMap.get(categoryId).add(service.providerId.toString());
+    });
+
+    // Group providers by category based on services
+    const categoriesWithProviders = categories.map(category => {
+      const providerSet = categoryProviderMap.get(category._id.toString()) || new Set();
+      const providerDistances = Array.from(providerSet)
+        .map(providerId => providerDistanceMap.get(providerId))
+        .filter(distance => distance !== undefined);
+
+      const totalDistance = providerDistances.reduce((sum, distance) => sum + distance, 0);
+      const averageDistance =
+        providerDistances.length > 0 ? Math.round(totalDistance / providerDistances.length) : null;
 
       return {
         categoryId: category._id,
         categoryName: category.name,
-        categoryIcon: category.icon,
-        categoryDescription: category.description,
-        providerCount: categoryProviders.length,
-        providers: categoryProviders.map(provider => ({
-          providerId: provider.providerId,
-          name: provider.name,
-          profileImage: provider.profileImage,
-          address: provider.address,
-          distance: provider.distance,
-          distanceKm: provider.distanceKm,
-          activityTime: provider.activityTime,
-          rating: provider.rating,
-          totalReviews: provider.totalReviews,
-          completedJobs: provider.completedJobs,
-          occupation: provider.occupation
-        }))
+        categoryImage: category.icon,
+        averageDistance,
+        averageDistanceKm: averageDistance !== null ? (averageDistance / 1000).toFixed(1) : null,
+        providerCount: providerSet.size
       };
     });
 
-    // Find providers without any category assigned
-    const providersWithoutCategory = providersWithDistance.filter(provider =>
-      !provider.categories || provider.categories.length === 0
-    );
+    // Find providers without any active services/categories
+    const providersWithoutCategory = providersWithDistance.filter(provider => {
+      const providerId = provider.providerId.toString();
+      for (const providerSet of categoryProviderMap.values()) {
+        if (providerSet.has(providerId)) {
+          return false;
+        }
+      }
+      return true;
+    });
 
     // If there are providers without categories, add them to an "Uncategorized" group
     if (providersWithoutCategory.length > 0) {
       providersWithoutCategory.sort((a, b) => a.distance - b.distance);
 
+      const totalDistance = providersWithoutCategory.reduce((sum, p) => sum + p.distance, 0);
+      const averageDistance =
+        providersWithoutCategory.length > 0
+          ? Math.round(totalDistance / providersWithoutCategory.length)
+          : null;
+
       categoriesWithProviders.push({
         categoryId: null,
         categoryName: 'Other Services',
-        categoryIcon: null,
-        categoryDescription: 'Providers without specific category',
-        providerCount: providersWithoutCategory.length,
-        providers: providersWithoutCategory.map(provider => ({
-          providerId: provider.providerId,
-          name: provider.name,
-          profileImage: provider.profileImage,
-          address: provider.address,
-          distance: provider.distance,
-          distanceKm: provider.distanceKm,
-          activityTime: provider.activityTime,
-          rating: provider.rating,
-          totalReviews: provider.totalReviews,
-          completedJobs: provider.completedJobs,
-          occupation: provider.occupation
-        }))
+        categoryImage: null,
+        averageDistance,
+        averageDistanceKm: averageDistance !== null ? (averageDistance / 1000).toFixed(1) : null,
+        providerCount: providersWithoutCategory.length
       });
     }
 
@@ -680,18 +688,25 @@ exports.getNearbyProvidersByCategoryId = async (req, res) => {
           return null;
         }
 
-        const providerObj = provider.toObject({ virtuals: true });
-        const userObj = providerUser?.toObject ? providerUser.toObject() : providerUser;
+        const providerServices = servicesByProvider.get(provider._id.toString()) || [];
 
         return {
-          provider: {
-            ...providerObj,
-            user: userObj
-          },
-          services: servicesByProvider.get(provider._id.toString()) || [],
+          providerId: provider._id,
+          name: providerUser.fullName,
+          profileImage: providerUser.profilePicture,
+          address: providerUser.location?.address || 'Address not available',
           distance: Math.round(distance),
           distanceKm: (distance / 1000).toFixed(1),
-          address: providerUser.location?.address || 'Address not available'
+          services: providerServices.map(service => ({
+            serviceId: service._id,
+            title: service.headline,
+            description: service.description,
+            rating: service.rating,
+            totalReviews: service.totalReviews,
+            price: service.basePrice,
+            image: service.servicePhoto,
+            appointmentEnabled: service.appointmentEnabled
+          }))
         };
       })
       .filter(item => item !== null);
@@ -719,6 +734,110 @@ exports.getNearbyProvidersByCategoryId = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while fetching nearby providers',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get providers for a specific category (no distance filter)
+ * GET /api/home/providers/category/:categoryId
+ */
+exports.getProvidersByCategoryId = async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid category id'
+      });
+    }
+
+    const Category = require('../models/Category');
+    const category = await Category.findById(categoryId).select('_id');
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    const services = await Service.find({
+      category: categoryId,
+      isActive: true
+    })
+      .populate('category', 'name icon description');
+
+    const providerIds = [...new Set(services.map(service => service.providerId.toString()))];
+
+    if (providerIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'Providers fetched successfully',
+        data: {
+          providers: [],
+          totalProviders: 0
+        }
+      });
+    }
+
+    const providers = await Provider.find({
+      _id: { $in: providerIds },
+      verificationStatus: 'verified',
+      isAvailable: true
+    })
+      .populate({
+        path: 'userId',
+        select: 'fullName profilePicture location'
+      })
+      .populate('categories', 'name icon description');
+
+    const servicesByProvider = new Map();
+    services.forEach((service) => {
+      const key = service.providerId.toString();
+      if (!servicesByProvider.has(key)) {
+        servicesByProvider.set(key, []);
+      }
+      servicesByProvider.get(key).push(service);
+    });
+
+    const providersWithServices = providers.map(provider => {
+      const providerUser = provider.userId;
+      const providerServices = servicesByProvider.get(provider._id.toString()) || [];
+
+      return {
+        providerId: provider._id,
+        name: providerUser?.fullName,
+        profileImage: providerUser?.profilePicture,
+        address: providerUser?.location?.address || 'Address not available',
+        services: providerServices.map(service => ({
+          serviceId: service._id,
+          title: service.headline,
+          description: service.description,
+          rating: service.rating,
+          totalReviews: service.totalReviews,
+          price: service.basePrice,
+          image: service.servicePhoto,
+          appointmentEnabled: service.appointmentEnabled
+        }))
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Providers fetched successfully',
+      data: {
+        providers: providersWithServices,
+        totalProviders: providersWithServices.length
+      }
+    });
+  } catch (error) {
+    console.error('Get providers by category id error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching providers',
       error: error.message
     });
   }

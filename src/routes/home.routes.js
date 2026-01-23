@@ -19,6 +19,10 @@ router.get('/nearby-providers', auth, homeController.getNearbyProvidersByCategor
 // GET /api/home/nearby-providers/category/:categoryId?latitude=40.7128&longitude=-74.0060&maxDistance=10000
 router.get('/nearby-providers/category/:categoryId', auth, homeController.getNearbyProvidersByCategoryId);
 
+// Get providers for a specific category (no distance)
+// GET /api/home/providers/category/:categoryId
+router.get('/providers/category/:categoryId', auth, homeController.getProvidersByCategoryId);
+
 // Get all categories with provider count
 // GET /api/home/categories
 router.get('/categories', auth, homeController.getHomeCategories);

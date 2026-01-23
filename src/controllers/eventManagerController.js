@@ -6,6 +6,7 @@ const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const crypto = require('crypto');
 const { sendOTPEmail } = require('../utility/emailService');
+const Settings = require('../models/Settings');
 
 /**
  * Register a new event manager
@@ -426,6 +427,74 @@ exports.logoutAll = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error during logout',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Delete event manager account (self)
+ * DELETE /api/event-managers/me
+ */
+exports.deleteEventManagerAccount = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const eventManager = await EventManager.findOne({ userId });
+    if (!eventManager) {
+      return res.status(404).json({
+        success: false,
+        message: 'Event manager profile not found'
+      });
+    }
+
+    // Delete ID card images from Cloudinary if they exist
+    if (eventManager.idCard?.frontImage) {
+      try {
+        const urlParts = eventManager.idCard.frontImage.split('/');
+        const publicIdWithExtension = urlParts.slice(-2).join('/');
+        const publicId = publicIdWithExtension.split('.')[0];
+        await deleteFromCloudinary(publicId);
+      } catch (err) {
+        console.error('Error deleting front ID card image:', err);
+      }
+    }
+
+    if (eventManager.idCard?.backImage) {
+      try {
+        const urlParts = eventManager.idCard.backImage.split('/');
+        const publicIdWithExtension = urlParts.slice(-2).join('/');
+        const publicId = publicIdWithExtension.split('.')[0];
+        await deleteFromCloudinary(publicId);
+      } catch (err) {
+        console.error('Error deleting back ID card image:', err);
+      }
+    }
+
+    const user = await User.findById(userId);
+    if (user?.profilePicture) {
+      try {
+        const urlParts = user.profilePicture.split('/');
+        const publicIdWithExtension = urlParts.slice(-2).join('/');
+        const publicId = publicIdWithExtension.split('.')[0];
+        await deleteFromCloudinary(publicId);
+      } catch (err) {
+        console.error('Error deleting profile picture:', err);
+      }
+    }
+
+    await EventManager.findByIdAndDelete(eventManager._id);
+    await User.findByIdAndDelete(userId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Event manager account deleted permanently'
+    });
+  } catch (error) {
+    console.error('Delete event manager account error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while deleting event manager account',
       error: error.message
     });
   }
@@ -954,6 +1023,70 @@ exports.resetPasswordWithOTP = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while resetting password',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Get privacy policy (Event Manager)
+ * GET /api/event-managers/privacy-policy
+ */
+exports.getPrivacyPolicy = async (req, res) => {
+  try {
+    const settings = await Settings.findOne({ key: 'privacy_policy', isActive: true })
+      .select('key title content updatedAt');
+
+    if (!settings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Privacy policy not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        settings
+      }
+    });
+  } catch (error) {
+    console.error('Get privacy policy error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching privacy policy',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Get terms and conditions (Event Manager)
+ * GET /api/event-managers/terms-and-conditions
+ */
+exports.getTermsAndConditions = async (req, res) => {
+  try {
+    const settings = await Settings.findOne({ key: 'terms_and_conditions', isActive: true })
+      .select('key title content updatedAt');
+
+    if (!settings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Terms and conditions not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        settings
+      }
+    });
+  } catch (error) {
+    console.error('Get terms and conditions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching terms and conditions',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }

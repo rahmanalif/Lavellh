@@ -459,6 +459,31 @@ exports.getEmployeeDetail = async (req, res) => {
 };
 
 /**
+ * Get employee phone number
+ * GET /api/business-owners/employees/:id/phone
+ */
+exports.getEmployeePhoneNumber = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { employee } = await verifyBusinessOwnerAccess(req, id);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        employeeId: employee._id,
+        phoneNumber: employee.mobileNumber
+      }
+    });
+  } catch (error) {
+    console.error('Get employee phone number error:', error);
+    res.status(error.message === 'Employee not found or access denied' ? 404 : 500).json({
+      success: false,
+      message: error.message || 'An error occurred while fetching employee phone number'
+    });
+  }
+};
+
+/**
  * Get employee overview, activities, and orders
  * GET /api/business-owners/employees/:id/overview
  */
@@ -832,6 +857,57 @@ exports.updateEmployee = async (req, res) => {
     res.status(error.message === 'Employee not found or access denied' ? 404 : 500).json({
       success: false,
       message: error.message || 'An error occurred while updating employee'
+    });
+  }
+};
+
+/**
+ * Toggle employee active status (block/unblock)
+ * PATCH /api/business-owners/employees/:id/toggle-status
+ */
+exports.toggleEmployeeStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isActive } = req.body;
+
+    const businessOwner = await BusinessOwner.findOne({ userId: req.user._id });
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner profile not found'
+      });
+    }
+
+    const employee = await Employee.findOne({
+      _id: id,
+      businessOwnerId: businessOwner._id
+    });
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: 'Employee not found or access denied'
+      });
+    }
+
+    const nextStatus =
+      isActive === undefined ? !employee.isActive : (isActive === 'true' || isActive === true);
+    employee.isActive = nextStatus;
+    await employee.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Employee ${employee.isActive ? 'unblocked' : 'blocked'} successfully`,
+      data: {
+        employeeId: employee._id,
+        isActive: employee.isActive
+      }
+    });
+  } catch (error) {
+    console.error('Toggle employee status error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'An error occurred while updating employee status'
     });
   }
 };

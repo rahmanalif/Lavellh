@@ -69,6 +69,13 @@ router.post('/reset-password', eventManagerController.resetPasswordWithOTP);
 router.get('/me', auth, eventManagerController.getEventManagerProfile);
 
 /**
+ * @route   DELETE /api/event-managers/me
+ * @desc    Delete event manager account
+ * @access  Private (Event Manager only)
+ */
+router.delete('/me', auth, eventManagerController.deleteEventManagerAccount);
+
+/**
  * @route   PUT /api/event-managers/me
  * @desc    Update current event manager profile (including password change)
  * @access  Private (Event Manager only)
@@ -76,6 +83,22 @@ router.get('/me', auth, eventManagerController.getEventManagerProfile);
  *          Only include them when you want to change the password
  */
 router.put('/me', auth, uploadProfilePicture, handleUploadError, eventManagerController.updateEventManagerProfile);
+
+// ============ PRIVACY POLICY & TERMS ROUTES ============
+
+/**
+ * @route   GET /api/event-managers/privacy-policy
+ * @desc    Get privacy policy
+ * @access  Private (Event Manager only)
+ */
+router.get('/privacy-policy', auth, eventManagerController.getPrivacyPolicy);
+
+/**
+ * @route   GET /api/event-managers/terms-and-conditions
+ * @desc    Get terms and conditions
+ * @access  Private (Event Manager only)
+ */
+router.get('/terms-and-conditions', auth, eventManagerController.getTermsAndConditions);
 
 // ============ EVENT MANAGEMENT ROUTES ============
 

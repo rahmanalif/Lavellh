@@ -1,5 +1,7 @@
 const User = require('../models/User');
 const BusinessOwner = require('../models/BusinessOwner');
+const Employee = require('../models/Employee');
+const EmployeeService = require('../models/EmployeeService');
 const RefreshToken = require('../models/RefreshToken');
 const { getTokenExpiresIn } = require('../utility/jwt');
 const fs = require('fs').promises;
@@ -8,6 +10,8 @@ const crypto = require('crypto');
 const { sendOTPEmail } = require('../utility/emailService');
 const Settings = require('../models/Settings');
 const BusinessOwnerNotification = require('../models/BusinessOwnerNotification');
+const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
+const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
 
 /**
  * Register a new business owner
@@ -1042,6 +1046,372 @@ exports.getBusinessOwnerNotifications = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Error fetching notifications'
+    });
+  }
+};
+
+/**
+ * Get business details for users
+ * GET /api/user/businesses/:businessOwnerId/details
+ */
+exports.getBusinessDetailsForUser = async (req, res) => {
+  try {
+    const { businessOwnerId } = req.params;
+
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(businessOwnerId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid business owner id'
+      });
+    }
+
+    const businessOwner = await BusinessOwner.findById(businessOwnerId)
+      .populate('userId', 'isActive');
+
+    if (!businessOwner || businessOwner.userId?.isActive === false) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner not found'
+      });
+    }
+
+    const businessName = businessOwner.businessProfile?.name || businessOwner.businessName;
+    const businessCoverPhoto = businessOwner.businessProfile?.coverPhoto || null;
+    const businessPhoto = businessOwner.businessPhoto || null;
+    const businessLocation =
+      businessOwner.businessProfile?.location || businessOwner.businessAddress?.fullAddress || null;
+    const about = businessOwner.businessProfile?.about || null;
+
+    const [employeeCount, serviceStats, employeeServices] = await Promise.all([
+      Employee.countDocuments({ businessOwnerId, isActive: true }),
+      EmployeeService.aggregate([
+        { $match: { businessOwnerId: businessOwner._id, isActive: true } },
+        {
+          $group: {
+            _id: '$businessOwnerId',
+            totalServices: { $sum: 1 },
+            appointmentServices: { $sum: { $cond: ['$appointmentEnabled', 1, 0] } }
+          }
+        }
+      ]),
+      EmployeeService.find({ businessOwnerId, isActive: true })
+        .populate('employeeId', 'fullName profilePhoto')
+        .sort({ createdAt: -1 })
+    ]);
+
+    const serviceCounts = serviceStats[0] || { totalServices: 0, appointmentServices: 0 };
+
+    const now = Date.now();
+    const team = employeeServices.map((service) => {
+      const createdAt = service.createdAt ? new Date(service.createdAt) : null;
+      const daysAgo = createdAt
+        ? Math.floor((now - createdAt.getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+      const slotPrices = (service.appointmentSlots || []).map(slot => slot.price);
+      const minAppointmentPrice = slotPrices.length > 0 ? Math.min(...slotPrices) : null;
+
+      return {
+        employeeId: service.employeeId?._id,
+        employeeServicePhoto: service.servicePhoto,
+        employeeImage: service.employeeId?.profilePhoto || null,
+        employeeName: service.employeeId?.fullName || null,
+        employeeAddress: businessLocation,
+        serviceHeadline: service.headline,
+        serviceDescription: service.description,
+        rating: service.rating,
+        totalReviews: service.totalReviews,
+        basePrice: service.basePrice,
+        appointmentEnabled: service.appointmentEnabled,
+        appointmentSlots: service.appointmentSlots,
+        minAppointmentPrice,
+        daysAgo
+      };
+    });
+
+    const serviceHeadlines = employeeServices.map(service => ({
+      serviceId: service._id,
+      headline: service.headline
+    }));
+
+    const [bookingReviews, appointmentReviews] = await Promise.all([
+      BusinessOwnerBooking.find({
+        businessOwnerId,
+        rating: { $ne: null }
+      })
+        .populate('userId', 'fullName profilePicture')
+        .select('rating review reviewedAt createdAt userId')
+        .sort({ reviewedAt: -1, createdAt: -1 })
+        .limit(20),
+      BusinessOwnerAppointment.find({
+        businessOwnerId,
+        rating: { $ne: null }
+      })
+        .populate('userId', 'fullName profilePicture')
+        .select('rating review reviewedAt createdAt userId')
+        .sort({ reviewedAt: -1, createdAt: -1 })
+        .limit(20)
+    ]);
+
+    const reviews = [...bookingReviews, ...appointmentReviews]
+      .map(review => ({
+        reviewId: review._id,
+        rating: review.rating,
+        comment: review.review,
+        createdAt: review.reviewedAt || review.createdAt,
+        user: {
+          name: review.userId?.fullName || 'Anonymous',
+          image: review.userId?.profilePicture
+        }
+      }))
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 20);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        businessDetails: {
+          businessOwnerId: businessOwner._id,
+          businessCoverPhoto,
+          businessPhoto,
+          businessName,
+          employeeCount,
+          serviceCount: serviceCounts.totalServices || 0,
+          appointmentServiceCount: serviceCounts.appointmentServices || 0,
+          businessLocation,
+          about
+        },
+        team,
+        services: serviceHeadlines,
+        reviews
+      }
+    });
+  } catch (error) {
+    console.error('Get business details for user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching business details',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get employee profile for users
+ * GET /api/user/employees/:employeeId/profile
+ */
+exports.getEmployeeProfileForUser = async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid employee id'
+      });
+    }
+
+    const employee = await Employee.findOne({
+      _id: employeeId,
+      isActive: true
+    });
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: 'Employee not found'
+      });
+    }
+
+    const businessOwner = await BusinessOwner.findById(employee.businessOwnerId);
+    const address =
+      businessOwner?.businessProfile?.location ||
+      businessOwner?.businessAddress?.fullAddress ||
+      'Address not available';
+
+    const services = await EmployeeService.find({
+      employeeId: employee._id,
+      isActive: true
+    }).sort({ createdAt: -1 });
+
+    const totalReviews = services.reduce((sum, service) => sum + (service.totalReviews || 0), 0);
+    const weightedRating = totalReviews > 0
+      ? services.reduce((sum, service) =>
+        sum + ((service.rating || 0) * (service.totalReviews || 0)), 0) / totalReviews
+      : (services.length > 0
+        ? services.reduce((sum, service) => sum + (service.rating || 0), 0) / services.length
+        : 0);
+
+    const now = Date.now();
+    const serviceItems = services.map((service) => {
+      const createdAt = service.createdAt ? new Date(service.createdAt) : null;
+      const daysAgo = createdAt
+        ? Math.floor((now - createdAt.getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+      const slotPrices = (service.appointmentSlots || []).map(slot => slot.price);
+      const minAppointmentPrice = slotPrices.length > 0 ? Math.min(...slotPrices) : null;
+
+      return {
+        serviceId: service._id,
+        image: service.servicePhoto,
+        title: service.headline,
+        about: service.description,
+        rating: service.rating,
+        basePrice: service.basePrice,
+        appointmentEnabled: service.appointmentEnabled,
+        appointmentSlots: service.appointmentSlots,
+        minAppointmentPrice,
+        daysAgo
+      };
+    });
+
+    const serviceIds = services.map(service => service._id);
+    const [bookingReviews, appointmentReviews] = await Promise.all([
+      BusinessOwnerBooking.find({
+        employeeServiceId: { $in: serviceIds },
+        rating: { $ne: null }
+      })
+        .populate('userId', 'fullName profilePicture')
+        .select('rating review reviewedAt createdAt userId')
+        .sort({ reviewedAt: -1, createdAt: -1 })
+        .limit(20),
+      BusinessOwnerAppointment.find({
+        employeeServiceId: { $in: serviceIds },
+        rating: { $ne: null }
+      })
+        .populate('userId', 'fullName profilePicture')
+        .select('rating review reviewedAt createdAt userId')
+        .sort({ reviewedAt: -1, createdAt: -1 })
+        .limit(20)
+    ]);
+
+    const reviews = [...bookingReviews, ...appointmentReviews]
+      .map(review => ({
+        reviewId: review._id,
+        rating: review.rating,
+        comment: review.review,
+        createdAt: review.reviewedAt || review.createdAt,
+        user: {
+          name: review.userId?.fullName || 'Anonymous',
+          image: review.userId?.profilePicture
+        }
+      }))
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 20);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        provider: {
+          name: employee.fullName,
+          image: employee.profilePhoto,
+          address,
+          rating: Math.round(weightedRating * 10) / 10,
+          totalReviews
+        },
+        allServices: {
+          totalServices: services.length,
+          services: serviceItems
+        },
+        reviews,
+        portfolio: []
+      }
+    });
+  } catch (error) {
+    console.error('Get employee profile for user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching employee profile',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get top businesses for users (by business owner rating)
+ * GET /api/user/top-businesses
+ */
+exports.getTopBusinesses = async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '10', 10), 50);
+
+    const businessOwners = await BusinessOwner.find()
+      .populate('userId', 'isActive')
+      .select('businessName businessPhoto businessAddress businessProfile')
+      .lean();
+
+    const activeOwners = businessOwners.filter(owner => owner.userId?.isActive !== false);
+    const ownerIds = activeOwners.map(owner => owner._id);
+
+    const [serviceStats, employeeCounts] = await Promise.all([
+      EmployeeService.aggregate([
+        { $match: { businessOwnerId: { $in: ownerIds }, isActive: true } },
+        {
+          $group: {
+            _id: '$businessOwnerId',
+            totalServices: { $sum: 1 },
+            appointmentServices: {
+              $sum: { $cond: ['$appointmentEnabled', 1, 0] }
+            },
+            ratingSum: { $sum: { $multiply: ['$rating', '$totalReviews'] } },
+            reviewCount: { $sum: '$totalReviews' }
+          }
+        },
+        {
+          $addFields: {
+            rating: {
+              $cond: [
+                { $gt: ['$reviewCount', 0] },
+                { $divide: ['$ratingSum', '$reviewCount'] },
+                0
+              ]
+            }
+          }
+        }
+      ]),
+      Employee.aggregate([
+        { $match: { businessOwnerId: { $in: ownerIds }, isActive: true } },
+        { $group: { _id: '$businessOwnerId', count: { $sum: 1 } } }
+      ])
+    ]);
+
+    const serviceMap = new Map(serviceStats.map(stat => [stat._id.toString(), stat]));
+    const employeeMap = new Map(employeeCounts.map(stat => [stat._id.toString(), stat.count]));
+
+    const topBusinesses = activeOwners.map(owner => {
+      const stats = serviceMap.get(owner._id.toString());
+      const businessName = owner.businessProfile?.name || owner.businessName;
+      const businessPhoto = owner.businessProfile?.coverPhoto || owner.businessPhoto || null;
+      const businessAddress = owner.businessProfile?.location || owner.businessAddress?.fullAddress || null;
+
+      return {
+        businessOwnerId: owner._id,
+        businessPhoto,
+        businessName,
+        businessRating: stats ? Math.round(stats.rating * 10) / 10 : 0,
+        businessAddress,
+        employeeCount: employeeMap.get(owner._id.toString()) || 0,
+        serviceCount: stats?.totalServices || 0,
+        appointmentServiceCount: stats?.appointmentServices || 0
+      };
+    })
+      .sort((a, b) => b.businessRating - a.businessRating)
+      .slice(0, limit);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        businesses: topBusinesses,
+        count: topBusinesses.length
+      }
+    });
+  } catch (error) {
+    console.error('Get top businesses error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching top businesses',
+      error: error.message
     });
   }
 };

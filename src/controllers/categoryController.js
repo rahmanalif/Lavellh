@@ -468,6 +468,67 @@ exports.getAllCategories = async (req, res) => {
 };
 
 /**
+ * Get All Active Categories (Authenticated User)
+ * GET /api/user/categories
+ */
+exports.getAllCategoriesForUser = async (req, res) => {
+  try {
+    const { parentOnly } = req.query;
+
+    const query = { isActive: true };
+
+    if (parentOnly === 'true') {
+      query.parentCategory = null;
+    }
+
+    const categories = await Category.find(query)
+      .populate('parentCategory', 'name slug')
+      .populate({
+        path: 'subcategories',
+        match: { isActive: true },
+        select: 'name slug description icon displayOrder'
+      })
+      .select('-createdBy -updatedAt')
+      .sort({ displayOrder: 1, name: 1 });
+
+    const mappedCategories = categories.map(category => ({
+      categoryId: category._id,
+      name: category.name,
+      description: category.description,
+      icon: category.icon,
+      parentCategoryId: category.parentCategory?._id || null,
+      isActive: category.isActive,
+      displayOrder: category.displayOrder,
+      createdAt: category.createdAt,
+      slug: category.slug,
+      subcategories: (category.subcategories || []).map(sub => ({
+        subcategoryId: sub._id,
+        name: sub.name,
+        description: sub.description,
+        icon: sub.icon,
+        displayOrder: sub.displayOrder,
+        slug: sub.slug
+      }))
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        categories: mappedCategories,
+        total: mappedCategories.length
+      }
+    });
+  } catch (error) {
+    console.error('Get all categories (user) error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching categories',
+      error: error.message
+    });
+  }
+};
+
+/**
  * Get Category by Slug (Public)
  * GET /api/categories/:slug
  */

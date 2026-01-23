@@ -63,6 +63,17 @@ router.get(
 );
 
 /**
+ * @route   GET /api/business-owners/employees/:id/phone
+ * @desc    Get employee phone number
+ * @access  Private (Business Owner only)
+ */
+router.get(
+  '/:id/phone',
+  auth,
+  employeeController.getEmployeePhoneNumber
+);
+
+/**
  * @route   PUT /api/business-owners/employees/:id
  * @desc    Update employee information
  * @access  Private (Business Owner only)
@@ -73,6 +84,17 @@ router.put(
   uploadEmployeeFiles,
   handleUploadError,
   employeeController.updateEmployee
+);
+
+/**
+ * @route   PATCH /api/business-owners/employees/:id/toggle-status
+ * @desc    Block/unblock employee
+ * @access  Private (Business Owner only)
+ */
+router.patch(
+  '/:id/toggle-status',
+  auth,
+  employeeController.toggleEmployeeStatus
 );
 
 /**

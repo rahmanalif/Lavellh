@@ -35,7 +35,7 @@ router.get('/:id', auth, serviceController.getProviderServiceById);
  * @desc    Update service
  * @access  Private (Provider)
  */
-router.put('/:id', auth, serviceController.updateService);
+router.put('/:id', auth, uploadServicePhoto, handleUploadError, serviceController.updateService);
 
 /**
  * @route   PUT /api/providers/services/:id/toggle-status

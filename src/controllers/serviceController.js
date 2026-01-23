@@ -1,6 +1,8 @@
 const Service = require('../models/Service');
 const Provider = require('../models/Provider');
+const Review = require('../models/Review');
 const Category = require('../models/Category');
+const Portfolio = require('../models/Portfolio');
 const { uploadToCloudinary } = require('../utility/cloudinary');
 
 /**
@@ -234,7 +236,6 @@ exports.updateService = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      servicePhoto,
       category,
       headline,
       description,
@@ -243,7 +244,7 @@ exports.updateService = async (req, res) => {
       appointmentEnabled,
       appointmentSlots,
       isActive
-    } = req.body;
+    } = req.body || {};
 
     // Get provider
     const provider = await Provider.findOne({ userId: req.user._id });
@@ -275,45 +276,81 @@ exports.updateService = async (req, res) => {
     }
 
     // Update fields
-    if (servicePhoto !== undefined) service.servicePhoto = servicePhoto;
+    if (req.file) {
+      const uploadResult = await uploadToCloudinary(req.file.path, 'services');
+      if (!uploadResult.success) {
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload service photo'
+        });
+      }
+      service.servicePhoto = uploadResult.url;
+    }
     if (category !== undefined) service.category = category;
     if (headline !== undefined) service.headline = headline;
     if (description !== undefined) service.description = description;
-    if (whyChooseUs !== undefined) service.whyChooseUs = whyChooseUs;
+    if (whyChooseUs !== undefined) {
+      try {
+        service.whyChooseUs = typeof whyChooseUs === 'string' ? JSON.parse(whyChooseUs) : whyChooseUs;
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid whyChooseUs format'
+        });
+      }
+    }
     if (isActive !== undefined) service.isActive = isActive;
 
     // Handle appointment toggle
     if (appointmentEnabled !== undefined) {
-      service.appointmentEnabled = appointmentEnabled;
+      const isAppointmentEnabled = appointmentEnabled === 'true' || appointmentEnabled === true;
+      service.appointmentEnabled = isAppointmentEnabled;
 
-      if (appointmentEnabled) {
+      if (isAppointmentEnabled) {
         // Appointment is ON - require slots
-        if (!appointmentSlots || appointmentSlots.length === 0) {
+        if (!appointmentSlots) {
           return res.status(400).json({
             success: false,
             message: 'At least one appointment slot is required when appointment is enabled'
           });
         }
-        service.appointmentSlots = appointmentSlots;
-        service.basePrice = 0;
+        try {
+          service.appointmentSlots = Array.isArray(appointmentSlots)
+            ? appointmentSlots
+            : JSON.parse(appointmentSlots);
+        } catch (error) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid appointmentSlots format'
+          });
+        }
       } else {
         // Appointment is OFF - require base price
-        if (!basePrice || basePrice <= 0) {
+        if (basePrice === undefined || parseFloat(basePrice) <= 0) {
           return res.status(400).json({
             success: false,
             message: 'Base price is required when appointment is disabled'
           });
         }
-        service.basePrice = basePrice;
+        service.basePrice = parseFloat(basePrice);
         service.appointmentSlots = [];
       }
     } else {
       // If appointment toggle not changed, update respective fields
       if (service.appointmentEnabled && appointmentSlots !== undefined) {
-        service.appointmentSlots = appointmentSlots;
+        try {
+          service.appointmentSlots = Array.isArray(appointmentSlots)
+            ? appointmentSlots
+            : JSON.parse(appointmentSlots);
+        } catch (error) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid appointmentSlots format'
+          });
+        }
       }
       if (!service.appointmentEnabled && basePrice !== undefined) {
-        service.basePrice = basePrice;
+        service.basePrice = parseFloat(basePrice);
       }
     }
 
@@ -561,6 +598,197 @@ exports.getServiceById = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while fetching service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Service Details (Authenticated User)
+ * GET /api/user/services/:id
+ */
+exports.getServiceDetailForUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const service = await Service.findOne({ _id: id, isActive: true })
+      .populate({
+        path: 'providerId',
+        select: 'rating totalReviews',
+        populate: {
+          path: 'userId',
+          select: 'fullName profilePicture location'
+        }
+      });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service not found'
+      });
+    }
+
+    const providerUser = service.providerId?.userId;
+
+    const reviews = await Review.find({
+      serviceId: service._id,
+      isActive: true
+    })
+      .populate('userId', 'fullName profilePicture')
+      .sort({ rating: -1, createdAt: -1 })
+      .limit(3);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        provider: {
+          name: providerUser?.fullName,
+          image: providerUser?.profilePicture,
+          address: providerUser?.location?.address || 'Address not available'
+        },
+        service: {
+          serviceId: service._id,
+          image: service.servicePhoto,
+          title: service.headline,
+          about: service.description,
+          whyChooseUs: service.whyChooseUs,
+          appointmentEnabled: service.appointmentEnabled,
+          basePrice: service.basePrice,
+          appointmentSlots: service.appointmentSlots,
+          topReviews: reviews.map(review => ({
+            reviewId: review._id,
+            rating: review.rating,
+            comment: review.comment,
+            createdAt: review.createdAt,
+            user: {
+              name: review.userId?.fullName || 'Anonymous',
+              image: review.userId?.profilePicture
+            }
+          }))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get service detail for user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching service details',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get provider profile for authenticated user
+ * GET /api/user/providers/:providerId/profile
+ */
+exports.getProviderProfileForUser = async (req, res) => {
+  try {
+    const { providerId } = req.params;
+
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(providerId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid provider id'
+      });
+    }
+
+    const provider = await Provider.findOne({
+      _id: providerId,
+      verificationStatus: 'verified',
+      isAvailable: true
+    }).populate({
+      path: 'userId',
+      select: 'fullName profilePicture location'
+    });
+
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider not found'
+      });
+    }
+
+    const services = await Service.find({
+      providerId: provider._id,
+      isActive: true
+    }).sort({ createdAt: -1 });
+
+    const reviews = await Review.find({
+      providerId: provider._id,
+      isActive: true
+    })
+      .populate('userId', 'fullName profilePicture')
+      .sort({ createdAt: -1 })
+      .limit(20);
+
+    const portfolioItems = await Portfolio.find({
+      providerId: provider._id,
+      isActive: true
+    }).sort({ displayOrder: 1, createdAt: -1 });
+
+    const now = Date.now();
+    const serviceItems = services.map((service) => {
+      const createdAt = service.createdAt ? new Date(service.createdAt) : null;
+      const daysAgo = createdAt
+        ? Math.floor((now - createdAt.getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+      const slotPrices = (service.appointmentSlots || []).map(slot => slot.price);
+      const minAppointmentPrice = slotPrices.length > 0 ? Math.min(...slotPrices) : null;
+
+      return {
+        serviceId: service._id,
+        image: service.servicePhoto,
+        title: service.headline,
+        about: service.description,
+        rating: service.rating,
+        totalReviews: service.totalReviews,
+        basePrice: service.basePrice,
+        appointmentEnabled: service.appointmentEnabled,
+        appointmentSlots: service.appointmentSlots,
+        minAppointmentPrice,
+        daysAgo
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        provider: {
+          name: provider.userId?.fullName,
+          image: provider.userId?.profilePicture,
+          address: provider.userId?.location?.address || 'Address not available',
+          rating: provider.rating,
+          totalReviews: provider.totalReviews
+        },
+        allServices: {
+          totalServices: services.length,
+          services: serviceItems
+        },
+        reviews: reviews.map(review => ({
+          reviewId: review._id,
+          rating: review.rating,
+          comment: review.comment,
+          createdAt: review.createdAt,
+          user: {
+            name: review.userId?.fullName || 'Anonymous',
+            image: review.userId?.profilePicture
+          }
+        })),
+        portfolio: portfolioItems.map(item => ({
+          portfolioId: item._id,
+          beforeImage: item.beforeImage,
+          afterImage: item.afterImage,
+          about: item.about
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Get provider profile for user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching provider profile',
       error: error.message
     });
   }
