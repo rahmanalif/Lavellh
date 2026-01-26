@@ -64,4 +64,18 @@ router.patch('/:id/start', auth, providerBookingController.startBooking);
  */
 router.patch('/:id/complete', auth, providerBookingController.completeBooking);
 
+/**
+ * @route   POST /api/providers/bookings/:id/request-due
+ * @desc    Request due payment after completion
+ * @access  Private (Provider)
+ */
+router.post('/:id/request-due', auth, providerBookingController.requestDuePayment);
+
+/**
+ * @route   POST /api/providers/bookings/:id/mark-offline-paid
+ * @desc    Mark due payment as paid offline
+ * @access  Private (Provider)
+ */
+router.post('/:id/mark-offline-paid', auth, providerBookingController.markOfflinePaid);
+
 module.exports = router;

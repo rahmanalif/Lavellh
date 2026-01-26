@@ -25,6 +25,12 @@ const reviewSchema = new mongoose.Schema({
     ref: 'Booking',
     default: null
   },
+  // Reference to the appointment (optional)
+  appointmentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Appointment',
+    default: null
+  },
   // Rating (1-5 stars)
   rating: {
     type: Number,
@@ -58,6 +64,10 @@ reviewSchema.index({ rating: 1 });
 reviewSchema.index({ userId: 1, bookingId: 1 }, {
   unique: true,
   sparse: true // Allow multiple null bookingIds
+});
+reviewSchema.index({ userId: 1, appointmentId: 1 }, {
+  unique: true,
+  sparse: true // Allow multiple null appointmentIds
 });
 
 // Virtual to get user details

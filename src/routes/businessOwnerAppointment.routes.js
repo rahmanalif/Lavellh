@@ -32,10 +32,11 @@ router.get('/available-slots/:serviceId', businessOwnerBookingController.getAvai
 router.get('/:id', auth, businessOwnerBookingController.getBusinessOwnerAppointmentById);
 
 /**
- * @route   PATCH /api/business-owner-appointments/:id/cancel
- * @desc    Cancel a business owner appointment
+ * @route   POST /api/business-owner-appointments/:id/review
+ * @desc    Add review for a completed business owner appointment
  * @access  Private (User)
+ * @body    { rating, comment }
  */
-router.patch('/:id/cancel', auth, businessOwnerBookingController.cancelBusinessOwnerAppointment);
+router.post('/:id/review', auth, businessOwnerBookingController.addBusinessOwnerAppointmentReview);
 
 module.exports = router;

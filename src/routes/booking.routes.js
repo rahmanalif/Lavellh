@@ -38,4 +38,33 @@ router.get('/:id', auth, bookingController.getBookingById);
  */
 router.patch('/:id/cancel', auth, bookingController.cancelBooking);
 
+/**
+ * @route   POST /api/bookings/:id/review
+ * @desc    Add review for a completed booking
+ * @access  Private (Owner only)
+ * @body    { rating, comment }
+ */
+router.post('/:id/review', auth, bookingController.addBookingReview);
+
+/**
+ * @route   GET /api/bookings/:id/due/intent
+ * @desc    Get due payment client secret
+ * @access  Private (User)
+ */
+router.get('/:id/due/intent', auth, bookingController.getDuePaymentIntent);
+
+/**
+ * @route   POST /api/bookings/:id/due/confirm
+ * @desc    Confirm due payment
+ * @access  Private (User)
+ */
+router.post('/:id/due/confirm', auth, bookingController.confirmDuePayment);
+
+/**
+ * @route   GET /api/bookings/:id/checkout-session
+ * @desc    Get Stripe checkout session URL for down payment
+ * @access  Private (User)
+ */
+router.get('/:id/checkout-session', auth, bookingController.getCheckoutSession);
+
 module.exports = router;

@@ -21,6 +21,9 @@ const userRoutes = require('./user.routes');
 const employeeRoutes = require('./employee.routes');
 const businessOwnerBookingRoutes = require('./businessOwnerBooking.routes');
 const businessOwnerAppointmentRoutes = require('./businessOwnerAppointment.routes');
+const notificationRoutes = require('./notification.routes');
+const conversationRoutes = require('./conversation.routes');
+const businessOwnerWishlistRoutes = require('./businessOwnerWishlist.routes');
 
 // Use auth routes
 router.use('/auth', authRoutes);
@@ -78,6 +81,15 @@ router.use('/home', homeRoutes);
 
 // Use user routes (authenticated)
 router.use('/user', userRoutes);
+
+// Use notifications routes (authenticated)
+router.use('/notifications', notificationRoutes);
+
+// Use conversation routes (authenticated)
+router.use('/conversations', conversationRoutes);
+
+// Business owner employee wishlist routes
+router.use('/business-owners/wishlist', businessOwnerWishlistRoutes);
 
 // Public settings route (Terms & Conditions, Privacy Policy, etc.)
 const adminController = require('../controllers/adminController');

@@ -31,4 +31,12 @@ router.get('/:id', auth, businessOwnerBookingController.getBusinessOwnerBookingB
  */
 router.patch('/:id/cancel', auth, businessOwnerBookingController.cancelBusinessOwnerBooking);
 
+/**
+ * @route   POST /api/business-owner-bookings/:id/review
+ * @desc    Add review for a completed business owner booking
+ * @access  Private (User)
+ * @body    { rating, comment }
+ */
+router.post('/:id/review', auth, businessOwnerBookingController.addBusinessOwnerBookingReview);
+
 module.exports = router;

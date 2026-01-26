@@ -1,12 +1,110 @@
 const User = require('../models/User');
 const EventManager = require('../models/EventManager');
 const RefreshToken = require('../models/RefreshToken');
+const EventManagerRegistrationOTP = require('../models/EventManagerRegistrationOTP');
 const { getTokenExpiresIn } = require('../utility/jwt');
 const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const crypto = require('crypto');
-const { sendOTPEmail } = require('../utility/emailService');
+const bcrypt = require('bcryptjs');
+const { sendOTPEmail, sendRegistrationOTPEmail } = require('../utility/emailService');
+const { sendRegistrationOTPSMS } = require('../utility/smsService');
 const Settings = require('../models/Settings');
+
+const OTP_EXPIRY_MS = 10 * 60 * 1000;
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const hashValue = (value) => crypto.createHash('sha256').update(value).digest('hex');
+
+const removeFileIfExists = async (filePath) => {
+  if (!filePath) return;
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    // Ignore cleanup errors
+  }
+};
+
+const removeCloudinaryIfExists = async (publicId) => {
+  if (!publicId) return;
+  try {
+    await deleteFromCloudinary(publicId);
+  } catch (error) {
+    // Ignore cleanup errors
+  }
+};
+
+const removePendingEventManagerAssets = async (pending) => {
+  if (!pending) return;
+  await removeCloudinaryIfExists(pending.idCardFrontPublicId);
+  await removeCloudinaryIfExists(pending.idCardBackPublicId);
+};
+
+const createEventManagerAndTokens = async (req, payload) => {
+  const session = await User.startSession();
+  session.startTransaction();
+
+  try {
+    const user = new User({
+      fullName: payload.fullName,
+      email: payload.email || undefined,
+      phoneNumber: payload.phoneNumber || undefined,
+      password: payload.passwordHash,
+      userType: 'eventManager',
+      authProvider: 'local',
+      termsAccepted: true
+    });
+
+    await user.save({ session });
+
+    const eventManager = new EventManager({
+      userId: user._id,
+      dateOfBirth: payload.dateOfBirth,
+      idType: payload.idType,
+      identificationNumber: payload.identificationNumber,
+      idCard: {
+        frontImage: payload.idCardFrontUrl || null,
+        backImage: payload.idCardBackUrl || null
+      }
+    });
+
+    await eventManager.save({ session });
+
+    await session.commitTransaction();
+
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    const refreshTokenDoc = new RefreshToken({
+      userId: user._id,
+      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+      expiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
+    });
+
+    await refreshTokenDoc.save();
+
+    const accessExpiresIn = getTokenExpiresIn('access');
+
+    return {
+      user,
+      eventManager,
+      accessToken,
+      refreshToken,
+      accessExpiresIn
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
 
 /**
  * Register a new event manager
@@ -93,17 +191,18 @@ exports.registerEventManager = async (req, res) => {
     const idCardBackPath = req.files?.idCardBack ? req.files.idCardBack[0].path : null;
 
     // Check if user already exists
+    const normalizedEmail = email ? email.toLowerCase() : undefined;
     const existingUser = await User.findOne({
       $or: [
-        ...(email ? [{ email: email.toLowerCase() }] : []),
+        ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
         ...(phoneNumber ? [{ phoneNumber }] : [])
       ]
     });
 
     if (existingUser) {
       // Clean up uploaded files
-      if (idCardFrontPath) await fs.unlink(idCardFrontPath).catch(() => {});
-      if (idCardBackPath) await fs.unlink(idCardBackPath).catch(() => {});
+      await removeFileIfExists(idCardFrontPath);
+      await removeFileIfExists(idCardBackPath);
 
       return res.status(400).json({
         success: false,
@@ -114,121 +213,119 @@ exports.registerEventManager = async (req, res) => {
     // Upload ID card images to Cloudinary
     let frontImageUrl = null;
     let backImageUrl = null;
+    let frontImagePublicId = null;
+    let backImagePublicId = null;
 
     if (idCardFrontPath) {
       const frontUploadResult = await uploadToCloudinary(idCardFrontPath, 'id-cards');
       if (frontUploadResult.success) {
         frontImageUrl = frontUploadResult.url;
+        frontImagePublicId = frontUploadResult.publicId;
       }
       // Delete local file after upload
-      await fs.unlink(idCardFrontPath).catch(() => {});
+      await removeFileIfExists(idCardFrontPath);
     }
 
     if (idCardBackPath) {
       const backUploadResult = await uploadToCloudinary(idCardBackPath, 'id-cards');
       if (backUploadResult.success) {
         backImageUrl = backUploadResult.url;
+        backImagePublicId = backUploadResult.publicId;
       }
       // Delete local file after upload
-      await fs.unlink(idCardBackPath).catch(() => {});
+      await removeFileIfExists(idCardBackPath);
     }
 
-    // Start a database transaction to ensure atomic operations
-    const session = await User.startSession();
-    session.startTransaction();
-
     try {
-      // Create User account
-      const user = new User({
-        fullName,
-        email: email ? email.toLowerCase() : undefined,
-        phoneNumber: phoneNumber || undefined,
-        password,
-        userType: 'eventManager',
-        authProvider: 'local',
-        termsAccepted: true
-      });
+      const identifiers = [];
+      if (normalizedEmail) identifiers.push({ email: normalizedEmail });
+      if (phoneNumber) identifiers.push({ phoneNumber });
 
-      await user.save({ session });
+      const pendingQuery = identifiers.length > 1 ? { $or: identifiers } : identifiers[0];
+      const existingPending = await EventManagerRegistrationOTP.findOne(pendingQuery);
 
-      // Create EventManager profile
-      const eventManager = new EventManager({
-        userId: user._id,
+      if (existingPending) {
+        if (normalizedEmail && existingPending.email && normalizedEmail !== existingPending.email) {
+          return res.status(400).json({
+            success: false,
+            message: 'Email does not match existing pending registration'
+          });
+        }
+        if (phoneNumber && existingPending.phoneNumber && phoneNumber !== existingPending.phoneNumber) {
+          return res.status(400).json({
+            success: false,
+            message: 'Phone number does not match existing pending registration'
+          });
+        }
+      }
+
+      if (existingPending && frontImagePublicId && existingPending.idCardFrontPublicId) {
+        await removeCloudinaryIfExists(existingPending.idCardFrontPublicId);
+      }
+      if (existingPending && backImagePublicId && existingPending.idCardBackPublicId) {
+        await removeCloudinaryIfExists(existingPending.idCardBackPublicId);
+      }
+
+      const salt = await bcrypt.genSalt(12);
+      const passwordHash = await bcrypt.hash(password, salt);
+      const otp = generateOTP();
+      const otpHash = hashValue(otp);
+      const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MS);
+
+      const update = {
+        email: normalizedEmail || existingPending?.email || undefined,
+        phoneNumber: phoneNumber || existingPending?.phoneNumber || undefined,
+        fullName: fullName || existingPending?.fullName,
+        passwordHash,
         dateOfBirth: dob,
-        idType,
-        identificationNumber,
-        idCard: {
-          frontImage: frontImageUrl,
-          backImage: backImageUrl
+        idType: idType || existingPending?.idType,
+        identificationNumber: identificationNumber || existingPending?.identificationNumber,
+        idCardFrontUrl: frontImageUrl || existingPending?.idCardFrontUrl || null,
+        idCardFrontPublicId: frontImagePublicId || existingPending?.idCardFrontPublicId || null,
+        idCardBackUrl: backImageUrl || existingPending?.idCardBackUrl || null,
+        idCardBackPublicId: backImagePublicId || existingPending?.idCardBackPublicId || null,
+        otpHash,
+        otpExpiresAt,
+        isVerified: false,
+        verificationTokenHash: undefined,
+        verificationTokenExpiresAt: undefined
+      };
+
+      const pending = await EventManagerRegistrationOTP.findOneAndUpdate(
+        pendingQuery,
+        update,
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      try {
+        const displayName = fullName || existingPending?.fullName || 'there';
+        if (normalizedEmail) {
+          await sendRegistrationOTPEmail(normalizedEmail, otp, displayName);
+        } else {
+          await sendRegistrationOTPSMS(phoneNumber, otp, displayName);
         }
-      });
+      } catch (sendError) {
+        await EventManagerRegistrationOTP.deleteOne({ _id: pending._id });
+        await removeCloudinaryIfExists(frontImagePublicId);
+        await removeCloudinaryIfExists(backImagePublicId);
+        console.error('Error sending event manager registration OTP:', sendError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to send OTP. Please try again later.',
+          error: process.env.NODE_ENV === 'development' ? sendError.message : undefined
+        });
+      }
 
-      await eventManager.save({ session });
-
-      // Commit the transaction
-      await session.commitTransaction();
-
-      // Generate access token and refresh token
-      const accessToken = user.generateAccessToken();
-      const refreshToken = user.generateRefreshToken();
-
-      // Calculate refresh token expiration
-      const refreshExpiresIn = getTokenExpiresIn('refresh');
-      const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
-
-      // Store refresh token in database
-      const refreshTokenDoc = new RefreshToken({
-        userId: user._id,
-        token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
-        expiresAt,
-        deviceInfo: {
-          userAgent: req.headers['user-agent'],
-          ip: req.ip || req.connection.remoteAddress
-        }
-      });
-
-      await refreshTokenDoc.save();
-
-      // Get access token expiration time
-      const accessExpiresIn = getTokenExpiresIn('access');
-
-      // Return success response
-      res.status(201).json({
+      return res.status(200).json({
         success: true,
-        message: 'Event manager registration successful',
+        message: `OTP has been sent to your ${normalizedEmail ? 'email' : 'phone number'}.`,
         data: {
-          user: {
-            id: user._id,
-            fullName: user.fullName,
-            email: user.email,
-            phoneNumber: user.phoneNumber,
-            userType: user.userType,
-            authProvider: user.authProvider
-          },
-          eventManager: {
-            id: eventManager._id,
-            dateOfBirth: eventManager.dateOfBirth,
-            idType: eventManager.idType,
-            identificationNumber: eventManager.identificationNumber,
-            idCardUploaded: {
-              front: !!frontImageUrl,
-              back: !!backImageUrl
-            }
-          },
-          accessToken,
-          refreshToken,
-          expiresIn: accessExpiresIn,
-          tokenType: 'Bearer'
+          sentTo: normalizedEmail ? 'email' : 'phone',
+          expiresIn: '10 minutes'
         }
       });
-
     } catch (transactionError) {
-      // Rollback the transaction on error
-      await session.abortTransaction();
       throw transactionError;
-    } finally {
-      // End the session
-      session.endSession();
     }
 
   } catch (error) {
@@ -237,10 +334,10 @@ exports.registerEventManager = async (req, res) => {
     // Clean up uploaded files on error
     if (req.files) {
       if (req.files.idCardFront) {
-        await fs.unlink(req.files.idCardFront[0].path).catch(() => {});
+        await removeFileIfExists(req.files.idCardFront[0].path);
       }
       if (req.files.idCardBack) {
-        await fs.unlink(req.files.idCardBack[0].path).catch(() => {});
+        await removeFileIfExists(req.files.idCardBack[0].path);
       }
     }
 
@@ -248,6 +345,142 @@ exports.registerEventManager = async (req, res) => {
       success: false,
       message: 'An error occurred during registration',
       error: error.message
+    });
+  }
+};
+
+/**
+ * Verify event manager registration OTP and create event manager
+ * POST /api/event-managers/register/verify-otp
+ */
+exports.verifyEventManagerRegistrationOTP = async (req, res) => {
+  try {
+    const { email, phoneNumber, otp } = req.body;
+
+    if (!email && !phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone number is required'
+      });
+    }
+
+    if (!otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP is required'
+      });
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP must be a 6-digit number'
+      });
+    }
+
+    const normalizedEmail = email ? email.toLowerCase() : undefined;
+    const pending = await EventManagerRegistrationOTP.findOne(
+      normalizedEmail ? { email: normalizedEmail } : { phoneNumber }
+    ).select('+otpHash +otpExpiresAt +passwordHash');
+
+    if (!pending) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request'
+      });
+    }
+
+    if (pending.otpExpiresAt && Date.now() > pending.otpExpiresAt.getTime()) {
+      await EventManagerRegistrationOTP.deleteOne({ _id: pending._id });
+      await removePendingEventManagerAssets(pending);
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Please request a new one.'
+      });
+    }
+
+    const isValid = hashValue(otp) === pending.otpHash;
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP. Please try again.'
+      });
+    }
+
+    if (
+      !pending.fullName ||
+      !pending.passwordHash ||
+      !pending.dateOfBirth ||
+      !pending.idType ||
+      !pending.identificationNumber
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Registration data is incomplete. Please register again.'
+      });
+    }
+
+    const identifiers = [];
+    if (pending.email) identifiers.push({ email: pending.email });
+    if (pending.phoneNumber) identifiers.push({ phoneNumber: pending.phoneNumber });
+
+    const existingUser = await User.findOne({ $or: identifiers });
+    if (existingUser) {
+      await EventManagerRegistrationOTP.deleteOne({ _id: pending._id });
+      return res.status(400).json({
+        success: false,
+        message: 'User with this email or phone number already exists'
+      });
+    }
+
+    const authData = await createEventManagerAndTokens(req, {
+      fullName: pending.fullName,
+      email: pending.email,
+      phoneNumber: pending.phoneNumber,
+      passwordHash: pending.passwordHash,
+      dateOfBirth: pending.dateOfBirth,
+      idType: pending.idType,
+      identificationNumber: pending.identificationNumber,
+      idCardFrontUrl: pending.idCardFrontUrl,
+      idCardBackUrl: pending.idCardBackUrl
+    });
+
+    await EventManagerRegistrationOTP.deleteOne({ _id: pending._id });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Event manager registration successful',
+      data: {
+        user: {
+          id: authData.user._id,
+          fullName: authData.user.fullName,
+          email: authData.user.email,
+          phoneNumber: authData.user.phoneNumber,
+          userType: authData.user.userType,
+          authProvider: authData.user.authProvider
+        },
+        eventManager: {
+          id: authData.eventManager._id,
+          dateOfBirth: authData.eventManager.dateOfBirth,
+          idType: authData.eventManager.idType,
+          identificationNumber: authData.eventManager.identificationNumber,
+          idCardUploaded: {
+            front: !!authData.eventManager.idCard?.frontImage,
+            back: !!authData.eventManager.idCard?.backImage
+          }
+        },
+        accessToken: authData.accessToken,
+        refreshToken: authData.refreshToken,
+        expiresIn: authData.accessExpiresIn,
+        tokenType: 'Bearer'
+      }
+    });
+  } catch (error) {
+    console.error('Verify event manager OTP error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error verifying OTP',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

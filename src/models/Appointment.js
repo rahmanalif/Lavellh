@@ -101,6 +101,18 @@ const appointmentSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
+  // Platform fee (percentage of total)
+  platformFee: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  // Provider payout from payment after fee
+  providerPayoutFromPayment: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   // Payment tracking
   downPayment: {
     type: Number,
@@ -115,8 +127,33 @@ const appointmentSchema = new mongoose.Schema({
   // Payment Status
   paymentStatus: {
     type: String,
-    enum: ['pending', 'partial', 'completed', 'refunded'],
+    enum: ['pending', 'partial', 'completed', 'offline_paid', 'refunded'],
     default: 'pending'
+  },
+  paymentIntentId: {
+    type: String,
+    default: null
+  },
+  paymentIntentStatus: {
+    type: String,
+    default: null
+  },
+  checkoutSessionId: {
+    type: String,
+    default: null
+  },
+  checkoutSessionUrl: {
+    type: String,
+    default: null
+  },
+  paidVia: {
+    type: String,
+    enum: ['online', 'offline', null],
+    default: null
+  },
+  paidAt: {
+    type: Date,
+    default: null
   },
   // Appointment Status
   appointmentStatus: {
@@ -204,10 +241,15 @@ appointmentSchema.pre('validate', function(next) {
 // Calculate remaining amount before saving
 appointmentSchema.pre('save', function(next) {
   if (this.totalAmount !== undefined && this.downPayment !== undefined) {
-    this.remainingAmount = this.totalAmount - this.downPayment;
+    if (this.paymentStatus === 'completed' || this.paymentStatus === 'offline_paid') {
+      this.remainingAmount = 0;
+    } else {
+      this.remainingAmount = this.totalAmount - this.downPayment;
+    }
 
-    // Update payment status
-    if (this.remainingAmount <= 0) {
+    if (this.paymentStatus === 'completed' || this.paymentStatus === 'offline_paid') {
+      // keep as-is
+    } else if (this.remainingAmount <= 0) {
       this.paymentStatus = 'completed';
     } else if (this.downPayment > 0) {
       this.paymentStatus = 'partial';

@@ -47,11 +47,18 @@ router.get('/:id', auth, bookingController.getAppointmentById);
 router.patch('/:id/reschedule', auth, bookingController.rescheduleAppointment);
 
 /**
- * @route   PATCH /api/appointments/:id/cancel
- * @desc    Cancel an appointment
- * @access  Private (Owner only)
- * @body    { cancellationReason }
+ * @route   GET /api/appointments/:id/checkout-session
+ * @desc    Get Stripe checkout session URL for appointment payment
+ * @access  Private (User)
  */
-router.patch('/:id/cancel', auth, bookingController.cancelAppointment);
+router.get('/:id/checkout-session', auth, bookingController.getAppointmentCheckoutSession);
+
+/**
+ * @route   POST /api/appointments/:id/review
+ * @desc    Add review for a completed appointment
+ * @access  Private (Owner only)
+ * @body    { rating, comment }
+ */
+router.post('/:id/review', auth, bookingController.addAppointmentReview);
 
 module.exports = router;

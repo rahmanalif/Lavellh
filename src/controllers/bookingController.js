@@ -3,6 +3,30 @@ const Appointment = require('../models/Appointment');
 const Service = require('../models/Service');
 const User = require('../models/User');
 const Provider = require('../models/Provider');
+const Review = require('../models/Review');
+const { getStripe } = require('../utility/stripe');
+
+const updateServiceRating = async (serviceId) => {
+  const stats = await Review.aggregate([
+    { $match: { serviceId: serviceId, isActive: true } },
+    {
+      $group: {
+        _id: '$serviceId',
+        avgRating: { $avg: '$rating' },
+        totalReviews: { $sum: 1 }
+      }
+    }
+  ]);
+
+  if (stats.length > 0) {
+    await Service.findByIdAndUpdate(serviceId, {
+      rating: Math.round(stats[0].avgRating * 10) / 10,
+      totalReviews: stats[0].totalReviews
+    });
+  } else {
+    await Service.findByIdAndUpdate(serviceId, { rating: 0, totalReviews: 0 });
+  }
+};
 
 /**
  * @desc    Create a regular booking (for services with appointmentEnabled = false)
@@ -11,14 +35,14 @@ const Provider = require('../models/Provider');
  */
 exports.createBooking = async (req, res) => {
   try {
-    const { serviceId, bookingDate, downPayment, userNotes } = req.body;
+    const { serviceId, bookingDate, userNotes } = req.body;
     const userId = req.user._id;
 
     // Validate required fields
-    if (!serviceId || !bookingDate || downPayment === undefined) {
+    if (!serviceId || !bookingDate) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide serviceId, bookingDate, and downPayment'
+        message: 'Please provide serviceId and bookingDate'
       });
     }
 
@@ -46,14 +70,11 @@ exports.createBooking = async (req, res) => {
       });
     }
 
-    // Validate down payment (minimum 20% of base price)
-    const minimumDownPayment = service.basePrice * 0.2;
-    if (downPayment < minimumDownPayment) {
-      return res.status(400).json({
-        success: false,
-        message: `Down payment must be at least 20% of total amount (minimum: $${minimumDownPayment.toFixed(2)})`
-      });
-    }
+    const totalAmount = service.basePrice;
+    const downPayment = Math.round(totalAmount * 0.3 * 100) / 100;
+    const platformFee = Math.round(totalAmount * 0.1 * 100) / 100;
+    const providerPayoutFromDownPayment = Math.max(downPayment - platformFee, 0);
+    const dueAmount = Math.round((totalAmount - downPayment) * 100) / 100;
 
     // Create booking
     const booking = new Booking({
@@ -68,7 +89,10 @@ exports.createBooking = async (req, res) => {
         category: service.category._id
       },
       downPayment,
-      totalAmount: service.basePrice,
+      totalAmount,
+      platformFee,
+      providerPayoutFromDownPayment,
+      dueAmount,
       userNotes
     });
 
@@ -94,7 +118,15 @@ exports.createBooking = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Booking created successfully',
-      data: booking
+      data: {
+        booking,
+        payment: {
+          downPayment,
+          platformFee,
+          providerPayoutFromDownPayment,
+          dueAmount
+        }
+      }
     });
 
   } catch (error) {
@@ -118,7 +150,6 @@ exports.createAppointment = async (req, res) => {
       appointmentDate,
       timeSlot,
       slotId,
-      downPayment,
       userNotes
     } = req.body;
     const userId = req.user._id;
@@ -195,7 +226,7 @@ exports.createAppointment = async (req, res) => {
         category: service.category._id
       },
       totalAmount: selectedSlot.price,
-      downPayment: downPayment || 0,
+      downPayment: 0,
       userNotes
     });
 
@@ -361,7 +392,7 @@ exports.getBookingById = async (req, res) => {
         path: 'provider',
         populate: {
           path: 'userId',
-          select: 'fullName email phoneNumber profilePicture'
+          select: 'fullName email phoneNumber profilePicture location'
         }
       });
 
@@ -427,9 +458,20 @@ exports.getAppointmentById = async (req, res) => {
       });
     }
 
+    const providerUser = appointment.provider?.userId;
+
     res.status(200).json({
       success: true,
-      data: appointment
+      data: {
+        appointment,
+        provider: providerUser ? {
+          name: providerUser.fullName,
+          image: providerUser.profilePicture,
+          location: providerUser.location || null,
+          email: providerUser.email,
+          phoneNumber: providerUser.phoneNumber
+        } : null
+      }
     });
 
   } catch (error) {
@@ -537,6 +579,381 @@ exports.cancelAppointment = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Error cancelling appointment'
+    });
+  }
+};
+
+/**
+ * @desc    Add review for a booking (user)
+ * @route   POST /api/bookings/:id/review
+ * @access  Private (User)
+ */
+exports.addBookingReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    if (!comment || !comment.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Review comment is required'
+      });
+    }
+
+    const booking = await Booking.findById(id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to review this booking'
+      });
+    }
+
+    if (booking.bookingStatus !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'You can only review completed bookings'
+      });
+    }
+
+    if (booking.reviewedAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking already reviewed'
+      });
+    }
+
+    const review = new Review({
+      providerId: booking.providerId,
+      userId: booking.userId,
+      serviceId: booking.serviceId,
+      bookingId: booking._id,
+      rating,
+      comment: comment.trim()
+    });
+
+    await review.save();
+
+    booking.rating = rating;
+    booking.review = comment.trim();
+    booking.reviewedAt = new Date();
+    await booking.save();
+
+    await updateServiceRating(booking.serviceId);
+
+    res.status(201).json({
+      success: true,
+      message: 'Review submitted successfully',
+      data: { review }
+    });
+  } catch (error) {
+    console.error('Add booking review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error submitting review',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Add review for an appointment (user)
+ * @route   POST /api/appointments/:id/review
+ * @access  Private (User)
+ */
+exports.addAppointmentReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    if (!comment || !comment.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Review comment is required'
+      });
+    }
+
+    const appointment = await Appointment.findById(id);
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Appointment not found'
+      });
+    }
+
+    if (appointment.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to review this appointment'
+      });
+    }
+
+    if (appointment.appointmentStatus !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'You can only review completed appointments'
+      });
+    }
+
+    if (appointment.reviewedAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Appointment already reviewed'
+      });
+    }
+
+    const review = new Review({
+      providerId: appointment.providerId,
+      userId: appointment.userId,
+      serviceId: appointment.serviceId,
+      appointmentId: appointment._id,
+      rating,
+      comment: comment.trim()
+    });
+
+    await review.save();
+
+    appointment.rating = rating;
+    appointment.review = comment.trim();
+    appointment.reviewedAt = new Date();
+    await appointment.save();
+
+    await updateServiceRating(appointment.serviceId);
+
+    res.status(201).json({
+      success: true,
+      message: 'Review submitted successfully',
+      data: { review }
+    });
+  } catch (error) {
+    console.error('Add appointment review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error submitting review',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Get due payment client secret (user)
+ * @route   GET /api/bookings/:id/due/intent
+ * @access  Private (User)
+ */
+exports.getDuePaymentIntent = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (booking.paymentStatus !== 'due_requested' || !booking.duePaymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Due payment is not requested'
+      });
+    }
+
+    const stripe = getStripe();
+    const intent = await stripe.paymentIntents.retrieve(booking.duePaymentIntentId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        clientSecret: intent.client_secret,
+        amount: booking.dueAmount,
+        status: intent.status
+      }
+    });
+  } catch (error) {
+    console.error('Get due payment intent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching due payment intent',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Get appointment checkout session URL
+ * @route   GET /api/appointments/:id/checkout-session
+ * @access  Private (User)
+ */
+exports.getAppointmentCheckoutSession = async (req, res) => {
+  try {
+    const appointment = await Appointment.findById(req.params.id);
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Appointment not found'
+      });
+    }
+
+    if (appointment.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (!appointment.checkoutSessionUrl) {
+      return res.status(404).json({
+        success: false,
+        message: 'Checkout session not available yet'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        sessionUrl: appointment.checkoutSessionUrl
+      }
+    });
+  } catch (error) {
+    console.error('Get appointment checkout session error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching checkout session',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Confirm due payment (user)
+ * @route   POST /api/bookings/:id/due/confirm
+ * @access  Private (User)
+ */
+exports.confirmDuePayment = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (!booking.duePaymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Due payment not initialized'
+      });
+    }
+
+    const stripe = getStripe();
+    const intent = await stripe.paymentIntents.retrieve(booking.duePaymentIntentId);
+
+    booking.duePaymentIntentStatus = intent.status;
+
+    if (intent.status !== 'succeeded') {
+      await booking.save();
+      return res.status(400).json({
+        success: false,
+        message: 'Payment not completed'
+      });
+    }
+
+    booking.paymentStatus = 'completed';
+    booking.paidVia = 'online';
+    booking.duePaidAt = new Date();
+    booking.remainingAmount = 0;
+    await booking.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Due payment confirmed',
+      data: booking
+    });
+  } catch (error) {
+    console.error('Confirm due payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error confirming due payment',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Get checkout session URL for down payment
+ * @route   GET /api/bookings/:id/checkout-session
+ * @access  Private (User)
+ */
+exports.getCheckoutSession = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (!booking.checkoutSessionUrl) {
+      return res.status(404).json({
+        success: false,
+        message: 'Checkout session not available yet'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        sessionUrl: booking.checkoutSessionUrl
+      }
+    });
+  } catch (error) {
+    console.error('Get checkout session error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching checkout session',
+      error: error.message
     });
   }
 };

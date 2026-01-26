@@ -3,6 +3,82 @@ const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
 const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
 const EmployeeService = require('../models/EmployeeService');
 const BusinessOwner = require('../models/BusinessOwner');
+const { createAndSend } = require('../utility/notificationService');
+
+const formatDate = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+};
+
+const notifyBusinessOwner = async ({
+  businessOwnerId,
+  title,
+  body,
+  type,
+  entityType,
+  entityId,
+  metadata
+}) => {
+  const businessOwner = await BusinessOwner.findById(businessOwnerId).select('userId');
+  if (!businessOwner?.userId) return null;
+
+  return createAndSend({
+    userId: businessOwner.userId,
+    userType: 'businessOwner',
+    title,
+    body,
+    type,
+    entityType,
+    entityId,
+    metadata,
+    data: {
+      type,
+      entityType,
+      entityId: entityId ? entityId.toString() : ''
+    }
+  });
+};
+
+const updateEmployeeServiceRating = async (employeeServiceId) => {
+  const [bookingStats, appointmentStats] = await Promise.all([
+    BusinessOwnerBooking.aggregate([
+      { $match: { employeeServiceId: employeeServiceId, rating: { $ne: null } } },
+      {
+        $group: {
+          _id: '$employeeServiceId',
+          avgRating: { $avg: '$rating' },
+          totalReviews: { $sum: 1 }
+        }
+      }
+    ]),
+    BusinessOwnerAppointment.aggregate([
+      { $match: { employeeServiceId: employeeServiceId, rating: { $ne: null } } },
+      {
+        $group: {
+          _id: '$employeeServiceId',
+          avgRating: { $avg: '$rating' },
+          totalReviews: { $sum: 1 }
+        }
+      }
+    ])
+  ]);
+
+  const bookingCount = bookingStats[0]?.totalReviews || 0;
+  const bookingAvg = bookingStats[0]?.avgRating || 0;
+  const appointmentCount = appointmentStats[0]?.totalReviews || 0;
+  const appointmentAvg = appointmentStats[0]?.avgRating || 0;
+
+  const totalReviews = bookingCount + appointmentCount;
+  const weightedSum = (bookingAvg * bookingCount) + (appointmentAvg * appointmentCount);
+  const avgRating = totalReviews > 0 ? (weightedSum / totalReviews) : 0;
+
+  await EmployeeService.findByIdAndUpdate(employeeServiceId, {
+    rating: Math.round(avgRating * 10) / 10,
+    totalReviews: totalReviews
+  });
+};
 
 const getBusinessOwnerFromUser = async (userId) => {
   const businessOwner = await BusinessOwner.findOne({ userId });
@@ -94,6 +170,26 @@ exports.createBusinessOwnerBooking = async (req, res) => {
     service.bookings += 1;
     await service.save();
 
+    try {
+      const customerName = req.user?.fullName || 'A customer';
+      await notifyBusinessOwner({
+        businessOwnerId: booking.businessOwnerId,
+        title: 'New booking request',
+        body: `${customerName} booked ${service.headline || 'your service'} for ${formatDate(booking.bookingDate)}.`,
+        type: 'booking.new',
+        entityType: 'businessOwnerBooking',
+        entityId: booking._id,
+        metadata: {
+          bookingId: booking._id,
+          userId,
+          serviceId: service._id,
+          bookingDate: booking.bookingDate
+        }
+      });
+    } catch (notifyError) {
+      console.error('Notify business owner (booking created) error:', notifyError);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Booking created successfully',
@@ -120,7 +216,6 @@ exports.createBusinessOwnerAppointment = async (req, res) => {
       appointmentDate,
       timeSlot,
       slotId,
-      downPayment,
       userNotes
     } = req.body;
     const userId = req.user._id;
@@ -191,7 +286,7 @@ exports.createBusinessOwnerAppointment = async (req, res) => {
         categories: service.categories
       },
       totalAmount: selectedSlot.price,
-      downPayment: downPayment || 0,
+      downPayment: selectedSlot.price,
       userNotes
     });
 
@@ -219,6 +314,27 @@ exports.createBusinessOwnerAppointment = async (req, res) => {
 
     service.bookings += 1;
     await service.save();
+
+    try {
+      const customerName = req.user?.fullName || 'A customer';
+      await notifyBusinessOwner({
+        businessOwnerId: appointment.businessOwnerId,
+        title: 'New appointment request',
+        body: `${customerName} requested ${service.headline || 'your service'} on ${formatDate(appointment.appointmentDate)}.`,
+        type: 'appointment.new',
+        entityType: 'businessOwnerAppointment',
+        entityId: appointment._id,
+        metadata: {
+          appointmentId: appointment._id,
+          userId,
+          serviceId: service._id,
+          appointmentDate: appointment.appointmentDate,
+          timeSlot: appointment.timeSlot
+        }
+      });
+    } catch (notifyError) {
+      console.error('Notify business owner (appointment created) error:', notifyError);
+    }
 
     res.status(201).json({
       success: true,
@@ -454,6 +570,24 @@ exports.cancelBusinessOwnerBooking = async (req, res) => {
 
     await booking.cancel(cancellationReason, 'user');
 
+    try {
+      await notifyBusinessOwner({
+        businessOwnerId: booking.businessOwnerId,
+        title: 'Booking cancelled',
+        body: `A customer cancelled a booking for ${formatDate(booking.bookingDate)}.`,
+        type: 'booking.cancelled',
+        entityType: 'businessOwnerBooking',
+        entityId: booking._id,
+        metadata: {
+          bookingId: booking._id,
+          userId: booking.userId,
+          cancellationReason
+        }
+      });
+    } catch (notifyError) {
+      console.error('Notify business owner (booking cancelled) error:', notifyError);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Booking cancelled successfully',
@@ -501,6 +635,24 @@ exports.cancelBusinessOwnerAppointment = async (req, res) => {
 
     await appointment.cancel(cancellationReason, 'user');
 
+    try {
+      await notifyBusinessOwner({
+        businessOwnerId: appointment.businessOwnerId,
+        title: 'Appointment cancelled',
+        body: `A customer cancelled an appointment for ${formatDate(appointment.appointmentDate)}.`,
+        type: 'appointment.cancelled',
+        entityType: 'businessOwnerAppointment',
+        entityId: appointment._id,
+        metadata: {
+          appointmentId: appointment._id,
+          userId: appointment.userId,
+          cancellationReason
+        }
+      });
+    } catch (notifyError) {
+      console.error('Notify business owner (appointment cancelled) error:', notifyError);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Appointment cancelled successfully',
@@ -511,6 +663,192 @@ exports.cancelBusinessOwnerAppointment = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Error cancelling appointment'
+    });
+  }
+};
+
+/**
+ * @desc    Add review for a business owner booking (user)
+ * @route   POST /api/business-owner-bookings/:id/review
+ * @access  Private (User)
+ */
+exports.addBusinessOwnerBookingReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    if (!comment || !comment.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Review comment is required'
+      });
+    }
+
+    const booking = await BusinessOwnerBooking.findById(id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to review this booking'
+      });
+    }
+
+    if (booking.bookingStatus !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'You can only review completed bookings'
+      });
+    }
+
+    if (booking.reviewedAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking already reviewed'
+      });
+    }
+
+    booking.rating = rating;
+    booking.review = comment.trim();
+    booking.reviewedAt = new Date();
+    await booking.save();
+
+    await updateEmployeeServiceRating(booking.employeeServiceId);
+
+    try {
+      await notifyBusinessOwner({
+        businessOwnerId: booking.businessOwnerId,
+        title: 'New review received',
+        body: `You received a ${rating}-star review on a booking.`,
+        type: 'booking.reviewed',
+        entityType: 'businessOwnerBooking',
+        entityId: booking._id,
+        metadata: {
+          bookingId: booking._id,
+          userId: booking.userId,
+          rating
+        }
+      });
+    } catch (notifyError) {
+      console.error('Notify business owner (booking review) error:', notifyError);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Review submitted successfully',
+      data: { booking }
+    });
+  } catch (error) {
+    console.error('Add business owner booking review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error submitting review',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Add review for a business owner appointment (user)
+ * @route   POST /api/business-owner-appointments/:id/review
+ * @access  Private (User)
+ */
+exports.addBusinessOwnerAppointmentReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    if (!comment || !comment.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Review comment is required'
+      });
+    }
+
+    const appointment = await BusinessOwnerAppointment.findById(id);
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Appointment not found'
+      });
+    }
+
+    if (appointment.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to review this appointment'
+      });
+    }
+
+    if (appointment.appointmentStatus !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'You can only review completed appointments'
+      });
+    }
+
+    if (appointment.reviewedAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Appointment already reviewed'
+      });
+    }
+
+    appointment.rating = rating;
+    appointment.review = comment.trim();
+    appointment.reviewedAt = new Date();
+    await appointment.save();
+
+    await updateEmployeeServiceRating(appointment.employeeServiceId);
+
+    try {
+      await notifyBusinessOwner({
+        businessOwnerId: appointment.businessOwnerId,
+        title: 'New review received',
+        body: `You received a ${rating}-star review on an appointment.`,
+        type: 'appointment.reviewed',
+        entityType: 'businessOwnerAppointment',
+        entityId: appointment._id,
+        metadata: {
+          appointmentId: appointment._id,
+          userId: appointment.userId,
+          rating
+        }
+      });
+    } catch (notifyError) {
+      console.error('Notify business owner (appointment review) error:', notifyError);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Review submitted successfully',
+      data: { appointment }
+    });
+  } catch (error) {
+    console.error('Add business owner appointment review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error submitting review',
+      error: error.message
     });
   }
 };

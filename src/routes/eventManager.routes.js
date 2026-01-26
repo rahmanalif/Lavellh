@@ -18,6 +18,13 @@ router.post(
 );
 
 /**
+ * @route   POST /api/event-managers/register/verify-otp
+ * @desc    Verify registration OTP and complete event manager registration
+ * @access  Public
+ */
+router.post('/register/verify-otp', eventManagerController.verifyEventManagerRegistrationOTP);
+
+/**
  * @route   POST /api/event-managers/login
  * @desc    Login event manager
  * @access  Public

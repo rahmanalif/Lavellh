@@ -3,15 +3,120 @@ const BusinessOwner = require('../models/BusinessOwner');
 const Employee = require('../models/Employee');
 const EmployeeService = require('../models/EmployeeService');
 const RefreshToken = require('../models/RefreshToken');
+const BusinessOwnerRegistrationOTP = require('../models/BusinessOwnerRegistrationOTP');
 const { getTokenExpiresIn } = require('../utility/jwt');
 const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const crypto = require('crypto');
-const { sendOTPEmail } = require('../utility/emailService');
+const bcrypt = require('bcryptjs');
+const { sendOTPEmail, sendRegistrationOTPEmail } = require('../utility/emailService');
+const { sendRegistrationOTPSMS } = require('../utility/smsService');
 const Settings = require('../models/Settings');
-const BusinessOwnerNotification = require('../models/BusinessOwnerNotification');
+const Notification = require('../models/Notification');
 const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
 const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
+
+const OTP_EXPIRY_MS = 10 * 60 * 1000;
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const hashValue = (value) => crypto.createHash('sha256').update(value).digest('hex');
+
+const removeFileIfExists = async (filePath) => {
+  if (!filePath) return;
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    // Ignore cleanup errors
+  }
+};
+
+const removeCloudinaryIfExists = async (publicId) => {
+  if (!publicId) return;
+  try {
+    await deleteFromCloudinary(publicId);
+  } catch (error) {
+    // Ignore cleanup errors
+  }
+};
+
+const removePendingBusinessOwnerAssets = async (pending) => {
+  if (!pending) return;
+  await removeCloudinaryIfExists(pending.businessPhotoPublicId);
+  await removeCloudinaryIfExists(pending.idCardFrontPublicId);
+  await removeCloudinaryIfExists(pending.idCardBackPublicId);
+};
+
+const createBusinessOwnerAndTokens = async (req, payload) => {
+  const session = await User.startSession();
+  session.startTransaction();
+
+  try {
+    const user = new User({
+      fullName: payload.fullName,
+      email: payload.email || undefined,
+      phoneNumber: payload.phoneNumber || undefined,
+      password: payload.passwordHash,
+      userType: 'businessOwner',
+      authProvider: 'local',
+      termsAccepted: true
+    });
+
+    await user.save({ session });
+
+    const resolvedAddress = payload.businessAddress?.fullAddress || payload.businessAddress;
+
+    const businessOwner = new BusinessOwner({
+      userId: user._id,
+      dateOfBirth: payload.dateOfBirth,
+      businessName: payload.businessName,
+      businessCategory: payload.businessCategory,
+      businessAddress: resolvedAddress ? { fullAddress: resolvedAddress } : null,
+      businessPhoto: payload.businessPhotoUrl || null,
+      idCard: {
+        frontImage: payload.idCardFrontUrl || null,
+        backImage: payload.idCardBackUrl || null
+      },
+      occupation: payload.occupation || null,
+      referenceId: payload.referenceId || null
+    });
+
+    await businessOwner.save({ session });
+
+    await session.commitTransaction();
+
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    const refreshTokenDoc = new RefreshToken({
+      userId: user._id,
+      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+      expiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
+    });
+
+    await refreshTokenDoc.save();
+
+    const accessExpiresIn = getTokenExpiresIn('access');
+
+    return {
+      user,
+      businessOwner,
+      accessToken,
+      refreshToken,
+      accessExpiresIn
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
 
 /**
  * Register a new business owner
@@ -41,10 +146,17 @@ exports.registerBusinessOwner = async (req, res) => {
       });
     }
 
-    if (!businessName || !businessCategory){
+    if (!businessName || !businessCategory) {
       return res.status(400).json({
         success: false,
         message: 'Business name and business category are required'
+      });
+    }
+
+    if (!businessAddress) {
+      return res.status(400).json({
+        success: false,
+        message: 'Business address is required'
       });
     }
 
@@ -78,18 +190,19 @@ exports.registerBusinessOwner = async (req, res) => {
     const businessPhotoPath = req.files?.businessPhoto ? req.files.businessPhoto[0].path : null;
 
     // Check if user already exists
+    const normalizedEmail = email ? email.toLowerCase() : undefined;
     const existingUser = await User.findOne({
       $or: [
-        ...(email ? [{ email: email.toLowerCase() }] : []),
+        ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
         ...(phoneNumber ? [{ phoneNumber }] : [])
       ]
     });
 
     if (existingUser) {
       // Clean up uploaded files
-      if (idCardFrontPath) await fs.unlink(idCardFrontPath).catch(() => {});
-      if (idCardBackPath) await fs.unlink(idCardBackPath).catch(() => {});
-      if (businessPhotoPath) await fs.unlink(businessPhotoPath).catch(() => {});
+      await removeFileIfExists(idCardFrontPath);
+      await removeFileIfExists(idCardBackPath);
+      await removeFileIfExists(businessPhotoPath);
 
       return res.status(400).json({
         success: false,
@@ -101,137 +214,138 @@ exports.registerBusinessOwner = async (req, res) => {
     let frontImageUrl = null;
     let backImageUrl = null;
     let businessPhotoUrl = null;
+    let frontImagePublicId = null;
+    let backImagePublicId = null;
+    let businessPhotoPublicId = null;
 
     if (idCardFrontPath) {
       const frontUploadResult = await uploadToCloudinary(idCardFrontPath, 'id-cards');
       if (frontUploadResult.success) {
         frontImageUrl = frontUploadResult.url;
+        frontImagePublicId = frontUploadResult.publicId;
       }
       // Delete local file after upload
-      await fs.unlink(idCardFrontPath).catch(() => {});
+      await removeFileIfExists(idCardFrontPath);
     }
 
     if (idCardBackPath) {
       const backUploadResult = await uploadToCloudinary(idCardBackPath, 'id-cards');
       if (backUploadResult.success) {
         backImageUrl = backUploadResult.url;
+        backImagePublicId = backUploadResult.publicId;
       }
       // Delete local file after upload
-      await fs.unlink(idCardBackPath).catch(() => {});
+      await removeFileIfExists(idCardBackPath);
     }
 
     if (businessPhotoPath) {
       const businessUploadResult = await uploadToCloudinary(businessPhotoPath, 'business-photos');
       if (businessUploadResult.success) {
         businessPhotoUrl = businessUploadResult.url;
+        businessPhotoPublicId = businessUploadResult.publicId;
       }
-      await fs.unlink(businessPhotoPath).catch(() => {});
+      await removeFileIfExists(businessPhotoPath);
     }
 
-    // Start a database transaction to ensure atomic operations
-    const session = await User.startSession();
-    session.startTransaction();
-
     try {
-      // Create User account
-      const user = new User({
-        fullName,
-        email: email ? email.toLowerCase() : undefined,
-        phoneNumber: phoneNumber || undefined,
-        password,
-        userType: 'businessOwner',
-        authProvider: 'local',
-        termsAccepted: true
-      });
+      const identifiers = [];
+      if (normalizedEmail) identifiers.push({ email: normalizedEmail });
+      if (phoneNumber) identifiers.push({ phoneNumber });
 
-      await user.save({ session });
+      const pendingQuery = identifiers.length > 1 ? { $or: identifiers } : identifiers[0];
+      const existingPending = await BusinessOwnerRegistrationOTP.findOne(pendingQuery);
 
-      // Create BusinessOwner profile
-      const businessOwner = new BusinessOwner({
-        userId: user._id,
-        dateOfBirth: dateOfBirth || null,
-        businessName,
-        businessCategory,
-        businessAddress: businessAddress ? { fullAddress: businessAddress } : null,
-        businessPhoto: businessPhotoUrl,
-        idCard: {
-          frontImage: frontImageUrl,
-          backImage: backImageUrl
-        },
-        occupation: occupation || null,
-        referenceId: referenceId || null
-      });
-
-      await businessOwner.save({ session });
-
-      // Commit the transaction
-      await session.commitTransaction();
-
-      // Generate access token and refresh token
-      const accessToken = user.generateAccessToken();
-      const refreshToken = user.generateRefreshToken();
-
-      // Calculate refresh token expiration
-      const refreshExpiresIn = getTokenExpiresIn('refresh');
-      const expiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
-
-      // Store refresh token in database
-      const refreshTokenDoc = new RefreshToken({
-        userId: user._id,
-        token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
-        expiresAt,
-        deviceInfo: {
-          userAgent: req.headers['user-agent'],
-          ip: req.ip || req.connection.remoteAddress
+      if (existingPending) {
+        if (normalizedEmail && existingPending.email && normalizedEmail !== existingPending.email) {
+          return res.status(400).json({
+            success: false,
+            message: 'Email does not match existing pending registration'
+          });
         }
-      });
+        if (phoneNumber && existingPending.phoneNumber && phoneNumber !== existingPending.phoneNumber) {
+          return res.status(400).json({
+            success: false,
+            message: 'Phone number does not match existing pending registration'
+          });
+        }
+      }
 
-      await refreshTokenDoc.save();
+      if (existingPending && businessPhotoPublicId && existingPending.businessPhotoPublicId) {
+        await removeCloudinaryIfExists(existingPending.businessPhotoPublicId);
+      }
+      if (existingPending && frontImagePublicId && existingPending.idCardFrontPublicId) {
+        await removeCloudinaryIfExists(existingPending.idCardFrontPublicId);
+      }
+      if (existingPending && backImagePublicId && existingPending.idCardBackPublicId) {
+        await removeCloudinaryIfExists(existingPending.idCardBackPublicId);
+      }
 
-      // Get access token expiration time
-      const accessExpiresIn = getTokenExpiresIn('access');
+      const salt = await bcrypt.genSalt(12);
+      const passwordHash = await bcrypt.hash(password, salt);
+      const otp = generateOTP();
+      const otpHash = hashValue(otp);
+      const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MS);
 
-      // Return success response
-      res.status(201).json({
+      const update = {
+        email: normalizedEmail || existingPending?.email || undefined,
+        phoneNumber: phoneNumber || existingPending?.phoneNumber || undefined,
+        fullName: fullName || existingPending?.fullName,
+        passwordHash,
+        dateOfBirth: dateOfBirth || existingPending?.dateOfBirth,
+        businessName: businessName || existingPending?.businessName,
+        businessCategory: businessCategory || existingPending?.businessCategory,
+        businessAddress: businessAddress || existingPending?.businessAddress,
+        businessPhotoUrl: businessPhotoUrl || existingPending?.businessPhotoUrl || null,
+        businessPhotoPublicId: businessPhotoPublicId || existingPending?.businessPhotoPublicId || null,
+        idCardFrontUrl: frontImageUrl || existingPending?.idCardFrontUrl || null,
+        idCardFrontPublicId: frontImagePublicId || existingPending?.idCardFrontPublicId || null,
+        idCardBackUrl: backImageUrl || existingPending?.idCardBackUrl || null,
+        idCardBackPublicId: backImagePublicId || existingPending?.idCardBackPublicId || null,
+        occupation: occupation || existingPending?.occupation || null,
+        referenceId: referenceId || existingPending?.referenceId || null,
+        otpHash,
+        otpExpiresAt,
+        isVerified: false,
+        verificationTokenHash: undefined,
+        verificationTokenExpiresAt: undefined
+      };
+
+      const pending = await BusinessOwnerRegistrationOTP.findOneAndUpdate(
+        pendingQuery,
+        update,
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      try {
+        const displayName = fullName || existingPending?.fullName || 'there';
+        if (normalizedEmail) {
+          await sendRegistrationOTPEmail(normalizedEmail, otp, displayName);
+        } else {
+          await sendRegistrationOTPSMS(phoneNumber, otp, displayName);
+        }
+      } catch (sendError) {
+        await BusinessOwnerRegistrationOTP.deleteOne({ _id: pending._id });
+        await removeCloudinaryIfExists(businessPhotoPublicId);
+        await removeCloudinaryIfExists(frontImagePublicId);
+        await removeCloudinaryIfExists(backImagePublicId);
+        console.error('Error sending business owner registration OTP:', sendError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to send OTP. Please try again later.',
+          error: process.env.NODE_ENV === 'development' ? sendError.message : undefined
+        });
+      }
+
+      return res.status(200).json({
         success: true,
-        message: 'Business owner registration successful.',
+        message: `OTP has been sent to your ${normalizedEmail ? 'email' : 'phone number'}.`,
         data: {
-          user: {
-            id: user._id,
-            fullName: user.fullName,
-            email: user.email,
-            phoneNumber: user.phoneNumber,
-            userType: user.userType,
-            authProvider: user.authProvider
-          },
-          businessOwner: {
-            id: businessOwner._id,
-            dateOfBirth: businessOwner.dateOfBirth,
-            businessName: businessOwner.businessName,
-            businessCategory: businessOwner.businessCategory,
-            businessAddress: businessOwner.businessAddress,
-            businessPhoto: businessOwner.businessPhoto,
-            occupation: businessOwner.occupation,
-            referenceId: businessOwner.referenceId,
-            idCardUploaded: {
-              front: !!frontImageUrl,
-              back: !!backImageUrl
-            }
-          },
-          accessToken,
-          refreshToken,
-          expiresIn: accessExpiresIn,
-          tokenType: 'Bearer'
+          sentTo: normalizedEmail ? 'email' : 'phone',
+          expiresIn: '10 minutes'
         }
       });
-
     } catch (transactionError) {
-      // Rollback the transaction on error
-      await session.abortTransaction();
       throw transactionError;
-    } finally {
-      // End the session
-      session.endSession();
     }
 
   } catch (error) {
@@ -240,13 +354,13 @@ exports.registerBusinessOwner = async (req, res) => {
     // Clean up uploaded files on error
     if (req.files) {
       if (req.files.idCardFront) {
-        await fs.unlink(req.files.idCardFront[0].path).catch(() => {});
+        await removeFileIfExists(req.files.idCardFront[0].path);
       }
       if (req.files.idCardBack) {
-        await fs.unlink(req.files.idCardBack[0].path).catch(() => {});
+        await removeFileIfExists(req.files.idCardBack[0].path);
       }
       if (req.files.businessPhoto) {
-        await fs.unlink(req.files.businessPhoto[0].path).catch(() => {});
+        await removeFileIfExists(req.files.businessPhoto[0].path);
       }
     }
 
@@ -254,6 +368,151 @@ exports.registerBusinessOwner = async (req, res) => {
       success: false,
       message: 'An error occurred during registration',
       error: error.message
+    });
+  }
+};
+
+/**
+ * Verify business owner registration OTP and create business owner
+ * POST /api/business-owners/register/verify-otp
+ */
+exports.verifyBusinessOwnerRegistrationOTP = async (req, res) => {
+  try {
+    const { email, phoneNumber, otp } = req.body;
+
+    if (!email && !phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone number is required'
+      });
+    }
+
+    if (!otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP is required'
+      });
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP must be a 6-digit number'
+      });
+    }
+
+    const normalizedEmail = email ? email.toLowerCase() : undefined;
+    const pending = await BusinessOwnerRegistrationOTP.findOne(
+      normalizedEmail ? { email: normalizedEmail } : { phoneNumber }
+    ).select('+otpHash +otpExpiresAt +passwordHash');
+
+    if (!pending) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request'
+      });
+    }
+
+    if (pending.otpExpiresAt && Date.now() > pending.otpExpiresAt.getTime()) {
+      await BusinessOwnerRegistrationOTP.deleteOne({ _id: pending._id });
+      await removePendingBusinessOwnerAssets(pending);
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Please request a new one.'
+      });
+    }
+
+    const isValid = hashValue(otp) === pending.otpHash;
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP. Please try again.'
+      });
+    }
+
+    if (
+      !pending.fullName ||
+      !pending.passwordHash ||
+      !pending.businessName ||
+      !pending.businessCategory ||
+      !pending.businessAddress ||
+      !pending.dateOfBirth
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Registration data is incomplete. Please register again.'
+      });
+    }
+
+    const identifiers = [];
+    if (pending.email) identifiers.push({ email: pending.email });
+    if (pending.phoneNumber) identifiers.push({ phoneNumber: pending.phoneNumber });
+
+    const existingUser = await User.findOne({ $or: identifiers });
+    if (existingUser) {
+      await BusinessOwnerRegistrationOTP.deleteOne({ _id: pending._id });
+      return res.status(400).json({
+        success: false,
+        message: 'User with this email or phone number already exists'
+      });
+    }
+
+    const authData = await createBusinessOwnerAndTokens(req, {
+      fullName: pending.fullName,
+      email: pending.email,
+      phoneNumber: pending.phoneNumber,
+      passwordHash: pending.passwordHash,
+      dateOfBirth: pending.dateOfBirth,
+      businessName: pending.businessName,
+      businessCategory: pending.businessCategory,
+      businessAddress: pending.businessAddress,
+      businessPhotoUrl: pending.businessPhotoUrl,
+      idCardFrontUrl: pending.idCardFrontUrl,
+      idCardBackUrl: pending.idCardBackUrl,
+      occupation: pending.occupation,
+      referenceId: pending.referenceId
+    });
+
+    await BusinessOwnerRegistrationOTP.deleteOne({ _id: pending._id });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Business owner registration successful.',
+      data: {
+        user: {
+          id: authData.user._id,
+          fullName: authData.user.fullName,
+          email: authData.user.email,
+          phoneNumber: authData.user.phoneNumber,
+          userType: authData.user.userType,
+          authProvider: authData.user.authProvider
+        },
+        businessOwner: {
+          id: authData.businessOwner._id,
+          dateOfBirth: authData.businessOwner.dateOfBirth,
+          businessName: authData.businessOwner.businessName,
+          businessCategory: authData.businessOwner.businessCategory,
+          businessAddress: authData.businessOwner.businessAddress,
+          businessPhoto: authData.businessOwner.businessPhoto,
+          occupation: authData.businessOwner.occupation,
+          referenceId: authData.businessOwner.referenceId,
+          idCardUploaded: {
+            front: !!authData.businessOwner.idCard?.frontImage,
+            back: !!authData.businessOwner.idCard?.backImage
+          }
+        },
+        accessToken: authData.accessToken,
+        refreshToken: authData.refreshToken,
+        expiresIn: authData.accessExpiresIn,
+        tokenType: 'Bearer'
+      }
+    });
+  } catch (error) {
+    console.error('Verify business owner OTP error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error verifying OTP',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -1019,19 +1278,19 @@ exports.getBusinessOwnerNotifications = async (req, res) => {
       });
     }
 
-    const query = { businessOwnerId: businessOwner._id };
+    const query = { userId: businessOwner.userId, userType: 'businessOwner' };
     if (isRead !== undefined) {
       query.isRead = isRead === 'true';
     }
 
     const skip = (page - 1) * limit;
 
-    const notifications = await BusinessOwnerNotification.find(query)
+    const notifications = await Notification.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit, 10));
 
-    const total = await BusinessOwnerNotification.countDocuments(query);
+    const total = await Notification.countDocuments(query);
 
     res.status(200).json({
       success: true,

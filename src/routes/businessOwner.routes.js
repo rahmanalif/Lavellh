@@ -19,6 +19,13 @@ router.post(
 );
 
 /**
+ * @route   POST /api/business-owners/register/verify-otp
+ * @desc    Verify registration OTP and complete business owner registration
+ * @access  Public
+ */
+router.post('/register/verify-otp', businessOwnerController.verifyBusinessOwnerRegistrationOTP);
+
+/**
  * @route   POST /api/business-owners/login
  * @desc    Login business owner
  * @access  Public

@@ -141,7 +141,8 @@ exports.getProviderServices = async (req, res) => {
     const { page = 1, limit = 10, isActive } = req.query;
 
     // Get provider
-    const provider = await Provider.findOne({ userId: req.user._id });
+    const provider = await Provider.findOne({ userId: req.user._id })
+      .populate('userId', 'fullName location profilePicture');
     if (!provider) {
       return res.status(404).json({
         success: false,
@@ -163,11 +164,20 @@ exports.getProviderServices = async (req, res) => {
       .skip((page - 1) * limit);
 
     const count = await Service.countDocuments(query);
+    const providerName = provider.userId?.fullName || '';
+    const providerLocation = provider.userId?.location || null;
+    const providerProfilePicture = provider.userId?.profilePicture || null;
+    const servicesWithProvider = services.map(service => ({
+      ...service.toObject(),
+      providerName,
+      providerLocation,
+      providerProfilePicture
+    }));
 
     res.status(200).json({
       success: true,
       data: {
-        services,
+        services: servicesWithProvider,
         totalPages: Math.ceil(count / limit),
         currentPage: parseInt(page),
         total: count
@@ -193,7 +203,8 @@ exports.getProviderServiceById = async (req, res) => {
     const { id } = req.params;
 
     // Get provider
-    const provider = await Provider.findOne({ userId: req.user._id });
+    const provider = await Provider.findOne({ userId: req.user._id })
+      .populate('userId', 'fullName location profilePicture');
     if (!provider) {
       return res.status(404).json({
         success: false,
@@ -214,7 +225,12 @@ exports.getProviderServiceById = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        service
+        service: {
+          ...service.toObject(),
+          providerName: provider.userId?.fullName || '',
+          providerLocation: provider.userId?.location || null,
+          providerProfilePicture: provider.userId?.profilePicture || null
+        }
       }
     });
 
@@ -614,7 +630,7 @@ exports.getServiceDetailForUser = async (req, res) => {
     const service = await Service.findOne({ _id: id, isActive: true })
       .populate({
         path: 'providerId',
-        select: 'rating totalReviews',
+        select: 'rating totalReviews activityTime',
         populate: {
           path: 'userId',
           select: 'fullName profilePicture location'
@@ -644,7 +660,8 @@ exports.getServiceDetailForUser = async (req, res) => {
         provider: {
           name: providerUser?.fullName,
           image: providerUser?.profilePicture,
-          address: providerUser?.location?.address || 'Address not available'
+          address: providerUser?.location?.address || 'Address not available',
+          availableTime: service.providerId?.activityTime || ''
         },
         service: {
           serviceId: service._id,

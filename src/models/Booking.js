@@ -51,11 +51,29 @@ const bookingSchema = new mongoose.Schema({
       ref: 'Category'
     }
   },
-  // Down Payment (minimum 20% of total price)
+  // Down Payment (minimum 30% of total price)
   downPayment: {
     type: Number,
     required: [true, 'Down payment is required'],
     min: [0, 'Down payment cannot be negative']
+  },
+  // Platform fee (percentage of total)
+  platformFee: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  // Provider payout from down payment after fee
+  providerPayoutFromDownPayment: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  // Due amount after down payment
+  dueAmount: {
+    type: Number,
+    default: 0,
+    min: 0
   },
   // Total Amount (from service base price)
   totalAmount: {
@@ -72,8 +90,49 @@ const bookingSchema = new mongoose.Schema({
   // Payment Status
   paymentStatus: {
     type: String,
-    enum: ['pending', 'partial', 'completed', 'refunded'],
-    default: 'partial' // Since down payment is made
+    enum: ['pending', 'authorized', 'partial', 'due_requested', 'completed', 'offline_paid', 'refunded'],
+    default: 'pending'
+  },
+  paymentIntentId: {
+    type: String,
+    default: null
+  },
+  paymentIntentStatus: {
+    type: String,
+    default: null
+  },
+  checkoutSessionId: {
+    type: String,
+    default: null
+  },
+  checkoutSessionUrl: {
+    type: String,
+    default: null
+  },
+  duePaymentIntentId: {
+    type: String,
+    default: null
+  },
+  duePaymentIntentStatus: {
+    type: String,
+    default: null
+  },
+  dueRequestedAt: {
+    type: Date,
+    default: null
+  },
+  duePaidAt: {
+    type: Date,
+    default: null
+  },
+  offlinePaidAt: {
+    type: Date,
+    default: null
+  },
+  paidVia: {
+    type: String,
+    enum: ['online', 'offline', null],
+    default: null
   },
   // Booking Status
   bookingStatus: {
@@ -134,12 +193,12 @@ bookingSchema.index({ serviceId: 1 });
 bookingSchema.index({ bookingStatus: 1 });
 bookingSchema.index({ bookingDate: 1 });
 
-// Validate down payment is at least 20% of total amount
+// Validate down payment is at least 30% of total amount
 bookingSchema.pre('validate', function(next) {
   if (this.downPayment && this.totalAmount) {
-    const minimumDownPayment = this.totalAmount * 0.2;
+    const minimumDownPayment = this.totalAmount * 0.3;
     if (this.downPayment < minimumDownPayment) {
-      return next(new Error(`Down payment must be at least 20% of total amount (minimum: $${minimumDownPayment.toFixed(2)})`));
+      return next(new Error(`Down payment must be at least 30% of total amount (minimum: $${minimumDownPayment.toFixed(2)})`));
     }
   }
   next();
@@ -148,10 +207,17 @@ bookingSchema.pre('validate', function(next) {
 // Calculate remaining amount before saving
 bookingSchema.pre('save', function(next) {
   if (this.totalAmount && this.downPayment) {
-    this.remainingAmount = this.totalAmount - this.downPayment;
+    if (this.paymentStatus === 'completed' || this.paymentStatus === 'offline_paid') {
+      this.remainingAmount = 0;
+    } else {
+      this.remainingAmount = this.totalAmount - this.downPayment;
+    }
 
-    // Update payment status
-    if (this.remainingAmount <= 0) {
+    if (this.paymentStatus === 'completed' || this.paymentStatus === 'offline_paid') {
+      // keep as-is
+    } else if (this.paymentStatus === 'due_requested') {
+      // keep as-is
+    } else if (this.remainingAmount <= 0) {
       this.paymentStatus = 'completed';
     } else if (this.downPayment > 0) {
       this.paymentStatus = 'partial';
