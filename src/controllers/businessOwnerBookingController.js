@@ -4,6 +4,7 @@ const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
 const EmployeeService = require('../models/EmployeeService');
 const BusinessOwner = require('../models/BusinessOwner');
 const { createAndSend } = require('../utility/notificationService');
+const { getStripe } = require('../utility/stripe');
 
 const formatDate = (value) => {
   if (!value) return '';
@@ -97,13 +98,13 @@ const getBusinessOwnerFromUser = async (userId) => {
  */
 exports.createBusinessOwnerBooking = async (req, res) => {
   try {
-    const { employeeServiceId, bookingDate, downPayment, userNotes } = req.body;
+    const { employeeServiceId, bookingDate, userNotes } = req.body;
     const userId = req.user._id;
 
-    if (!employeeServiceId || !bookingDate || downPayment === undefined) {
+    if (!employeeServiceId || !bookingDate) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide employeeServiceId, bookingDate, and downPayment'
+        message: 'Please provide employeeServiceId and bookingDate'
       });
     }
 
@@ -129,13 +130,11 @@ exports.createBusinessOwnerBooking = async (req, res) => {
       });
     }
 
-    const minimumDownPayment = service.basePrice * 0.2;
-    if (downPayment < minimumDownPayment) {
-      return res.status(400).json({
-        success: false,
-        message: `Down payment must be at least 20% of total amount (minimum: $${minimumDownPayment.toFixed(2)})`
-      });
-    }
+    const totalAmount = service.basePrice;
+    const downPayment = Math.round(totalAmount * 0.3 * 100) / 100;
+    const platformFee = Math.round(totalAmount * 0.1 * 100) / 100;
+    const businessOwnerPayoutFromDownPayment = Math.max(downPayment - platformFee, 0);
+    const dueAmount = Math.round((totalAmount - downPayment) * 100) / 100;
 
     const booking = new BusinessOwnerBooking({
       userId,
@@ -149,7 +148,10 @@ exports.createBusinessOwnerBooking = async (req, res) => {
         categories: service.categories
       },
       downPayment,
-      totalAmount: service.basePrice,
+      platformFee,
+      businessOwnerPayoutFromDownPayment,
+      dueAmount,
+      totalAmount,
       userNotes
     });
 
@@ -264,6 +266,10 @@ exports.createBusinessOwnerAppointment = async (req, res) => {
       });
     }
 
+    const totalAmount = selectedSlot.price;
+    const platformFee = Math.round(totalAmount * 0.1 * 100) / 100;
+    const businessOwnerPayoutFromPayment = Math.max(totalAmount - platformFee, 0);
+
     const appointment = new BusinessOwnerAppointment({
       userId,
       employeeServiceId: service._id,
@@ -285,8 +291,10 @@ exports.createBusinessOwnerAppointment = async (req, res) => {
         headline: service.headline,
         categories: service.categories
       },
-      totalAmount: selectedSlot.price,
-      downPayment: selectedSlot.price,
+      totalAmount,
+      platformFee,
+      businessOwnerPayoutFromPayment,
+      downPayment: 0,
       userNotes
     });
 
@@ -1046,13 +1054,88 @@ exports.acceptBusinessOwnerBooking = async (req, res) => {
     }
     await booking.save();
 
+    let sessionUrl = null;
+    try {
+      const successUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL;
+      const cancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL;
+      if (!successUrl || !cancelUrl) {
+        return res.status(500).json({
+          success: false,
+          message: 'Stripe checkout URLs not configured'
+        });
+      }
+
+      const stripe = getStripe();
+      const session = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: 'usd',
+              unit_amount: Math.round(booking.downPayment * 100),
+              product_data: {
+                name: booking.serviceSnapshot?.serviceName || 'Service booking down payment'
+              }
+            }
+          }
+        ],
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        metadata: {
+          businessOwnerBookingId: booking._id.toString(),
+          userId: booking.userId.toString(),
+          businessOwnerId: booking.businessOwnerId.toString(),
+          type: 'business_owner_booking_down_payment'
+        }
+      });
+
+      booking.paymentIntentId = session.payment_intent || booking.paymentIntentId;
+      booking.paymentIntentStatus = 'requires_payment_method';
+      booking.checkoutSessionId = session.id;
+      booking.checkoutSessionUrl = session.url;
+      await booking.save();
+
+      sessionUrl = session.url;
+    } catch (stripeError) {
+      console.error('Stripe checkout session error:', stripeError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to create checkout session',
+        error: stripeError.message
+      });
+    }
+
     await booking.populate('user', 'fullName email phoneNumber profilePicture');
 
     res.status(200).json({
       success: true,
       message: 'Booking accepted successfully',
-      data: booking
+      data: {
+        booking,
+        checkout: {
+          sessionUrl
+        }
+      }
     });
+
+    if (sessionUrl) {
+      await createAndSend({
+        userId: booking.userId,
+        userType: 'user',
+        title: 'Booking accepted',
+        body: 'Your booking was accepted. Please complete the down payment.',
+        type: 'business_owner_booking_payment',
+        entityType: 'businessOwnerBooking',
+        entityId: booking._id,
+        metadata: { sessionUrl },
+        data: {
+          bookingId: booking._id.toString(),
+          sessionUrl
+        }
+      });
+    }
   } catch (error) {
     console.error('Accept business owner booking error:', error);
     res.status(500).json({
@@ -1346,13 +1429,88 @@ exports.acceptBusinessOwnerAppointment = async (req, res) => {
     }
     await appointment.save();
 
+    let sessionUrl = null;
+    try {
+      const successUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL;
+      const cancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL;
+      if (!successUrl || !cancelUrl) {
+        return res.status(500).json({
+          success: false,
+          message: 'Stripe checkout URLs not configured'
+        });
+      }
+
+      const stripe = getStripe();
+      const session = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: 'usd',
+              unit_amount: Math.round(appointment.totalAmount * 100),
+              product_data: {
+                name: appointment.serviceSnapshot?.serviceName || 'Appointment payment'
+              }
+            }
+          }
+        ],
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        metadata: {
+          businessOwnerAppointmentId: appointment._id.toString(),
+          userId: appointment.userId.toString(),
+          businessOwnerId: appointment.businessOwnerId.toString(),
+          type: 'business_owner_appointment_payment'
+        }
+      });
+
+      appointment.paymentIntentId = session.payment_intent || appointment.paymentIntentId;
+      appointment.paymentIntentStatus = 'requires_payment_method';
+      appointment.checkoutSessionId = session.id;
+      appointment.checkoutSessionUrl = session.url;
+      await appointment.save();
+
+      sessionUrl = session.url;
+    } catch (stripeError) {
+      console.error('Stripe checkout session error:', stripeError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to create checkout session',
+        error: stripeError.message
+      });
+    }
+
     await appointment.populate('user', 'fullName email phoneNumber profilePicture');
 
     res.status(200).json({
       success: true,
       message: 'Appointment accepted successfully',
-      data: appointment
+      data: {
+        appointment,
+        checkout: {
+          sessionUrl
+        }
+      }
     });
+
+    if (sessionUrl) {
+      await createAndSend({
+        userId: appointment.userId,
+        userType: 'user',
+        title: 'Appointment accepted',
+        body: 'Your appointment was accepted. Please complete payment.',
+        type: 'business_owner_appointment_payment',
+        entityType: 'businessOwnerAppointment',
+        entityId: appointment._id,
+        metadata: { sessionUrl },
+        data: {
+          appointmentId: appointment._id.toString(),
+          sessionUrl
+        }
+      });
+    }
   } catch (error) {
     console.error('Accept business owner appointment error:', error);
     res.status(500).json({
@@ -1645,6 +1803,336 @@ exports.markBusinessOwnerNoShow = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Error marking no-show'
+    });
+  }
+};
+
+/**
+ * @desc    Get checkout session URL for business owner booking down payment (user)
+ * @route   GET /api/business-owner-bookings/:id/checkout-session
+ * @access  Private (User)
+ */
+exports.getBusinessOwnerBookingCheckoutSession = async (req, res) => {
+  try {
+    const booking = await BusinessOwnerBooking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (!booking.checkoutSessionUrl) {
+      return res.status(404).json({
+        success: false,
+        message: 'Checkout session not available yet'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        sessionUrl: booking.checkoutSessionUrl
+      }
+    });
+  } catch (error) {
+    console.error('Get business owner booking checkout session error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching checkout session',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Get checkout session URL for business owner appointment payment (user)
+ * @route   GET /api/business-owner-appointments/:id/checkout-session
+ * @access  Private (User)
+ */
+exports.getBusinessOwnerAppointmentCheckoutSession = async (req, res) => {
+  try {
+    const appointment = await BusinessOwnerAppointment.findById(req.params.id);
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Appointment not found'
+      });
+    }
+
+    if (appointment.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (!appointment.checkoutSessionUrl) {
+      return res.status(404).json({
+        success: false,
+        message: 'Checkout session not available yet'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        sessionUrl: appointment.checkoutSessionUrl
+      }
+    });
+  } catch (error) {
+    console.error('Get business owner appointment checkout session error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching checkout session',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Get due payment client secret for business owner booking (user)
+ * @route   GET /api/business-owner-bookings/:id/due/intent
+ * @access  Private (User)
+ */
+exports.getBusinessOwnerDuePaymentIntent = async (req, res) => {
+  try {
+    const booking = await BusinessOwnerBooking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (booking.paymentStatus !== 'due_requested' || !booking.duePaymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Due payment is not requested'
+      });
+    }
+
+    const stripe = getStripe();
+    const intent = await stripe.paymentIntents.retrieve(booking.duePaymentIntentId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        clientSecret: intent.client_secret,
+        amount: booking.dueAmount,
+        status: intent.status
+      }
+    });
+  } catch (error) {
+    console.error('Get business owner due payment intent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching due payment intent',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Confirm due payment for business owner booking (user)
+ * @route   POST /api/business-owner-bookings/:id/due/confirm
+ * @access  Private (User)
+ */
+exports.confirmBusinessOwnerDuePayment = async (req, res) => {
+  try {
+    const booking = await BusinessOwnerBooking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (!booking.duePaymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Due payment not initialized'
+      });
+    }
+
+    const stripe = getStripe();
+    const intent = await stripe.paymentIntents.retrieve(booking.duePaymentIntentId);
+
+    booking.duePaymentIntentStatus = intent.status;
+
+    if (intent.status !== 'succeeded') {
+      await booking.save();
+      return res.status(400).json({
+        success: false,
+        message: 'Payment not completed'
+      });
+    }
+
+    booking.paymentStatus = 'completed';
+    booking.paidVia = 'online';
+    booking.duePaidAt = new Date();
+    booking.remainingAmount = 0;
+    await booking.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Due payment confirmed',
+      data: booking
+    });
+  } catch (error) {
+    console.error('Confirm business owner due payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error confirming due payment',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Request due payment for a completed booking (business owner)
+ * @route   POST /api/business-owners/bookings/:id/request-due
+ * @access  Private (Business Owner)
+ */
+exports.requestBusinessOwnerDuePayment = async (req, res) => {
+  try {
+    const businessOwner = await getBusinessOwnerFromUser(req.user._id);
+    const booking = await BusinessOwnerBooking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.businessOwnerId.toString() !== businessOwner._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (booking.bookingStatus !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking must be completed to request due payment'
+      });
+    }
+
+    if (booking.paymentStatus === 'completed' || booking.paymentStatus === 'offline_paid') {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking already paid'
+      });
+    }
+
+    const stripe = getStripe();
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(booking.dueAmount * 100),
+      currency: 'usd',
+      metadata: {
+        businessOwnerBookingId: booking._id.toString(),
+        userId: booking.userId.toString(),
+        businessOwnerId: booking.businessOwnerId.toString(),
+        type: 'business_owner_booking_due_payment'
+      }
+    });
+
+    booking.duePaymentIntentId = paymentIntent.id;
+    booking.duePaymentIntentStatus = paymentIntent.status;
+    booking.paymentStatus = 'due_requested';
+    booking.dueRequestedAt = new Date();
+    await booking.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Due payment requested',
+      data: {
+        bookingId: booking._id,
+        dueAmount: booking.dueAmount,
+        clientSecret: paymentIntent.client_secret
+      }
+    });
+  } catch (error) {
+    console.error('Request business owner due payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error requesting due payment',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Mark due payment as paid offline (business owner)
+ * @route   POST /api/business-owners/bookings/:id/mark-offline-paid
+ * @access  Private (Business Owner)
+ */
+exports.markBusinessOwnerOfflinePaid = async (req, res) => {
+  try {
+    const businessOwner = await getBusinessOwnerFromUser(req.user._id);
+    const booking = await BusinessOwnerBooking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.businessOwnerId.toString() !== businessOwner._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    if (booking.bookingStatus !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking must be completed to mark offline payment'
+      });
+    }
+
+    booking.paymentStatus = 'offline_paid';
+    booking.paidVia = 'offline';
+    booking.offlinePaidAt = new Date();
+    booking.remainingAmount = 0;
+    await booking.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Marked as paid offline',
+      data: booking
+    });
+  } catch (error) {
+    console.error('Mark business owner offline paid error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking offline payment',
+      error: error.message
     });
   }
 };

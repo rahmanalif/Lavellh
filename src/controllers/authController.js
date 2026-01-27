@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
 const { generateToken, getTokenExpiresIn } = require('../utility/jwt');
+const { upsertDeviceToken } = require('../utility/deviceToken');
 const { requestRegistrationOTP } = require('./registrationOTPController');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const fs = require('fs').promises;
@@ -68,7 +69,7 @@ const login = async (req, res) => {
     // Log request body for debugging (remove in production)
     console.log('Login request body:', req.body);
 
-    const { email, phoneNumber, password } = req.body;
+    const { email, phoneNumber, password, fcmToken, platform } = req.body;
 
     // Validate that at least email or phoneNumber is provided
     if (!email && !phoneNumber) {
@@ -140,6 +141,18 @@ const login = async (req, res) => {
 
     // Get access token expiration time
     const accessExpiresIn = getTokenExpiresIn('access');
+
+    if (fcmToken) {
+      try {
+        await upsertDeviceToken({
+          userId: user._id,
+          token: fcmToken,
+          platform: platform || 'unknown'
+        });
+      } catch (tokenError) {
+        console.error('Register device token on login error:', tokenError);
+      }
+    }
 
     res.json({
       success: true,

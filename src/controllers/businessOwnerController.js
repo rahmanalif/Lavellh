@@ -5,6 +5,7 @@ const EmployeeService = require('../models/EmployeeService');
 const RefreshToken = require('../models/RefreshToken');
 const BusinessOwnerRegistrationOTP = require('../models/BusinessOwnerRegistrationOTP');
 const { getTokenExpiresIn } = require('../utility/jwt');
+const { upsertDeviceToken } = require('../utility/deviceToken');
 const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const crypto = require('crypto');
@@ -523,7 +524,7 @@ exports.verifyBusinessOwnerRegistrationOTP = async (req, res) => {
  */
 exports.loginBusinessOwner = async (req, res) => {
   try {
-    const { email, phoneNumber, password } = req.body;
+    const { email, phoneNumber, password, fcmToken, platform } = req.body;
 
     // Validate input
     if ((!email && !phoneNumber) || !password) {
@@ -600,6 +601,18 @@ exports.loginBusinessOwner = async (req, res) => {
 
     // Get access token expiration time
     const accessExpiresIn = getTokenExpiresIn('access');
+
+    if (fcmToken) {
+      try {
+        await upsertDeviceToken({
+          userId: user._id,
+          token: fcmToken,
+          platform: platform || 'unknown'
+        });
+      } catch (tokenError) {
+        console.error('Register device token on business owner login error:', tokenError);
+      }
+    }
 
     // Return success response
     res.status(200).json({

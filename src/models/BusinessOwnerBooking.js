@@ -46,6 +46,21 @@ const businessOwnerBookingSchema = new mongoose.Schema({
     required: [true, 'Down payment is required'],
     min: [0, 'Down payment cannot be negative']
   },
+  platformFee: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  businessOwnerPayoutFromDownPayment: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  dueAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   totalAmount: {
     type: Number,
     required: true,
@@ -58,8 +73,49 @@ const businessOwnerBookingSchema = new mongoose.Schema({
   },
   paymentStatus: {
     type: String,
-    enum: ['pending', 'partial', 'completed', 'refunded'],
-    default: 'partial'
+    enum: ['pending', 'authorized', 'partial', 'due_requested', 'completed', 'offline_paid', 'refunded'],
+    default: 'pending'
+  },
+  paymentIntentId: {
+    type: String,
+    default: null
+  },
+  paymentIntentStatus: {
+    type: String,
+    default: null
+  },
+  checkoutSessionId: {
+    type: String,
+    default: null
+  },
+  checkoutSessionUrl: {
+    type: String,
+    default: null
+  },
+  duePaymentIntentId: {
+    type: String,
+    default: null
+  },
+  duePaymentIntentStatus: {
+    type: String,
+    default: null
+  },
+  dueRequestedAt: {
+    type: Date,
+    default: null
+  },
+  duePaidAt: {
+    type: Date,
+    default: null
+  },
+  offlinePaidAt: {
+    type: Date,
+    default: null
+  },
+  paidVia: {
+    type: String,
+    enum: ['online', 'offline', null],
+    default: null
   },
   bookingStatus: {
     type: String,
@@ -115,19 +171,27 @@ businessOwnerBookingSchema.index({ bookingDate: 1 });
 
 businessOwnerBookingSchema.pre('validate', function(next) {
   if (this.downPayment && this.totalAmount) {
-    const minimumDownPayment = this.totalAmount * 0.2;
+    const minimumDownPayment = this.totalAmount * 0.3;
     if (this.downPayment < minimumDownPayment) {
-      return next(new Error(`Down payment must be at least 20% of total amount (minimum: $${minimumDownPayment.toFixed(2)})`));
+      return next(new Error(`Down payment must be at least 30% of total amount (minimum: $${minimumDownPayment.toFixed(2)})`));
     }
   }
   next();
 });
 
 businessOwnerBookingSchema.pre('save', function(next) {
-  if (this.totalAmount && this.downPayment) {
-    this.remainingAmount = this.totalAmount - this.downPayment;
+  if (this.totalAmount && this.downPayment !== undefined) {
+    if (this.paymentStatus === 'completed' || this.paymentStatus === 'offline_paid') {
+      this.remainingAmount = 0;
+    } else {
+      this.remainingAmount = this.totalAmount - this.downPayment;
+    }
 
-    if (this.remainingAmount <= 0) {
+    if (this.paymentStatus === 'completed' || this.paymentStatus === 'offline_paid') {
+      // keep as-is
+    } else if (this.paymentStatus === 'due_requested') {
+      // keep as-is
+    } else if (this.remainingAmount <= 0) {
       this.paymentStatus = 'completed';
     } else if (this.downPayment > 0) {
       this.paymentStatus = 'partial';

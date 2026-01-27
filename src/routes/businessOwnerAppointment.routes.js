@@ -18,6 +18,13 @@ router.post('/', auth, businessOwnerBookingController.createBusinessOwnerAppoint
 router.get('/my-appointments', auth, businessOwnerBookingController.getMyBusinessOwnerAppointments);
 
 /**
+ * @route   GET /api/business-owner-appointments/:id/checkout-session
+ * @desc    Get checkout session URL for appointment payment
+ * @access  Private (User)
+ */
+router.get('/:id/checkout-session', auth, businessOwnerBookingController.getBusinessOwnerAppointmentCheckoutSession);
+
+/**
  * @route   GET /api/business-owner-appointments/available-slots/:serviceId
  * @desc    Get available appointment slots for a business owner service
  * @access  Public

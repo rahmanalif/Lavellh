@@ -24,6 +24,13 @@ router.post('/', auth, bookingController.createBooking);
 router.get('/my-bookings', auth, bookingController.getMyBookings);
 
 /**
+ * @route   GET /api/bookings/:id/payment-status
+ * @desc    Get payment status for a booking
+ * @access  Private (Owner only)
+ */
+router.get('/:id/payment-status', auth, bookingController.getBookingPaymentStatus);
+
+/**
  * @route   GET /api/bookings/:id
  * @desc    Get single booking by ID
  * @access  Private (Owner only)

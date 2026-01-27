@@ -86,6 +86,16 @@ const businessOwnerAppointmentSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
+  platformFee: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  businessOwnerPayoutFromPayment: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   downPayment: {
     type: Number,
     default: 0,
@@ -98,8 +108,33 @@ const businessOwnerAppointmentSchema = new mongoose.Schema({
   },
   paymentStatus: {
     type: String,
-    enum: ['pending', 'partial', 'completed', 'refunded'],
+    enum: ['pending', 'partial', 'completed', 'offline_paid', 'refunded'],
     default: 'pending'
+  },
+  paymentIntentId: {
+    type: String,
+    default: null
+  },
+  paymentIntentStatus: {
+    type: String,
+    default: null
+  },
+  checkoutSessionId: {
+    type: String,
+    default: null
+  },
+  checkoutSessionUrl: {
+    type: String,
+    default: null
+  },
+  paidVia: {
+    type: String,
+    enum: ['online', 'offline', null],
+    default: null
+  },
+  paidAt: {
+    type: Date,
+    default: null
   },
   appointmentStatus: {
     type: String,
@@ -177,9 +212,15 @@ businessOwnerAppointmentSchema.pre('validate', function(next) {
 
 businessOwnerAppointmentSchema.pre('save', function(next) {
   if (this.totalAmount !== undefined && this.downPayment !== undefined) {
-    this.remainingAmount = this.totalAmount - this.downPayment;
+    if (this.paymentStatus === 'completed' || this.paymentStatus === 'offline_paid') {
+      this.remainingAmount = 0;
+    } else {
+      this.remainingAmount = this.totalAmount - this.downPayment;
+    }
 
-    if (this.remainingAmount <= 0) {
+    if (this.paymentStatus === 'completed' || this.paymentStatus === 'offline_paid') {
+      // keep as-is
+    } else if (this.remainingAmount <= 0) {
       this.paymentStatus = 'completed';
     } else if (this.downPayment > 0) {
       this.paymentStatus = 'partial';

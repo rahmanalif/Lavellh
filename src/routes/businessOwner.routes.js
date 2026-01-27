@@ -221,6 +221,20 @@ router.get('/bookings/:id', auth, businessOwnerBookingController.getBusinessOwne
 router.patch('/bookings/:id/accept', auth, businessOwnerBookingController.acceptBusinessOwnerBooking);
 
 /**
+ * @route   POST /api/business-owners/bookings/:id/request-due
+ * @desc    Request due payment for a completed booking
+ * @access  Private (Business Owner)
+ */
+router.post('/bookings/:id/request-due', auth, businessOwnerBookingController.requestBusinessOwnerDuePayment);
+
+/**
+ * @route   POST /api/business-owners/bookings/:id/mark-offline-paid
+ * @desc    Mark due payment as paid offline
+ * @access  Private (Business Owner)
+ */
+router.post('/bookings/:id/mark-offline-paid', auth, businessOwnerBookingController.markBusinessOwnerOfflinePaid);
+
+/**
  * @route   PATCH /api/business-owners/bookings/:id/reject
  * @desc    Reject a booking request
  * @access  Private (Business Owner only)

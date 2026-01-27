@@ -1,5 +1,7 @@
 const { getStripe } = require('../utility/stripe');
 const Booking = require('../models/Booking');
+const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
+const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
 
 const handleStripeWebhook = async (req, res) => {
   let event;
@@ -30,6 +32,17 @@ const handleStripeWebhook = async (req, res) => {
           booking.paymentIntentStatus = data.status;
           booking.paymentStatus = 'authorized';
           await booking.save();
+          break;
+        }
+
+        const boBooking =
+          await BusinessOwnerBooking.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.businessOwnerBookingId ? await BusinessOwnerBooking.findById(data.metadata.businessOwnerBookingId) : null);
+        if (boBooking) {
+          boBooking.paymentIntentId = data.id;
+          boBooking.paymentIntentStatus = data.status;
+          boBooking.paymentStatus = 'authorized';
+          await boBooking.save();
         }
         break;
       }
@@ -46,6 +59,17 @@ const handleStripeWebhook = async (req, res) => {
           break;
         }
 
+        const boBooking =
+          await BusinessOwnerBooking.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.businessOwnerBookingId ? await BusinessOwnerBooking.findById(data.metadata.businessOwnerBookingId) : null);
+        if (boBooking) {
+          boBooking.paymentIntentId = data.id;
+          boBooking.paymentIntentStatus = data.status;
+          boBooking.paymentStatus = 'partial';
+          await boBooking.save();
+          break;
+        }
+
         // Due payment succeeded
         const dueBooking = await Booking.findOne({ duePaymentIntentId: data.id });
         if (dueBooking) {
@@ -55,6 +79,17 @@ const handleStripeWebhook = async (req, res) => {
           dueBooking.duePaidAt = new Date();
           dueBooking.remainingAmount = 0;
           await dueBooking.save();
+          break;
+        }
+
+        const dueBoBooking = await BusinessOwnerBooking.findOne({ duePaymentIntentId: data.id });
+        if (dueBoBooking) {
+          dueBoBooking.duePaymentIntentStatus = data.status;
+          dueBoBooking.paymentStatus = 'completed';
+          dueBoBooking.paidVia = 'online';
+          dueBoBooking.duePaidAt = new Date();
+          dueBoBooking.remainingAmount = 0;
+          await dueBoBooking.save();
           break;
         }
 
@@ -71,6 +106,20 @@ const handleStripeWebhook = async (req, res) => {
           appointment.paidAt = new Date();
           appointment.remainingAmount = 0;
           await appointment.save();
+          break;
+        }
+
+        const boAppointment =
+          await BusinessOwnerAppointment.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.businessOwnerAppointmentId ? await BusinessOwnerAppointment.findById(data.metadata.businessOwnerAppointmentId) : null);
+        if (boAppointment) {
+          boAppointment.paymentIntentId = data.id;
+          boAppointment.paymentIntentStatus = data.status;
+          boAppointment.paymentStatus = 'completed';
+          boAppointment.paidVia = 'online';
+          boAppointment.paidAt = new Date();
+          boAppointment.remainingAmount = 0;
+          await boAppointment.save();
         }
         break;
       }
@@ -84,10 +133,25 @@ const handleStripeWebhook = async (req, res) => {
           await booking.save();
           break;
         }
+        const boBooking =
+          await BusinessOwnerBooking.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.businessOwnerBookingId ? await BusinessOwnerBooking.findById(data.metadata.businessOwnerBookingId) : null);
+        if (boBooking) {
+          boBooking.paymentIntentId = data.id;
+          boBooking.paymentIntentStatus = data.status;
+          await boBooking.save();
+          break;
+        }
         const dueBooking = await Booking.findOne({ duePaymentIntentId: data.id });
         if (dueBooking) {
           dueBooking.duePaymentIntentStatus = data.status;
           await dueBooking.save();
+          break;
+        }
+        const dueBoBooking = await BusinessOwnerBooking.findOne({ duePaymentIntentId: data.id });
+        if (dueBoBooking) {
+          dueBoBooking.duePaymentIntentStatus = data.status;
+          await dueBoBooking.save();
           break;
         }
         const Appointment = require('../models/Appointment');
@@ -98,6 +162,15 @@ const handleStripeWebhook = async (req, res) => {
           appointment.paymentIntentId = data.id;
           appointment.paymentIntentStatus = data.status;
           await appointment.save();
+          break;
+        }
+        const boAppointment =
+          await BusinessOwnerAppointment.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.businessOwnerAppointmentId ? await BusinessOwnerAppointment.findById(data.metadata.businessOwnerAppointmentId) : null);
+        if (boAppointment) {
+          boAppointment.paymentIntentId = data.id;
+          boAppointment.paymentIntentStatus = data.status;
+          await boAppointment.save();
         }
         break;
       }
@@ -108,10 +181,22 @@ const handleStripeWebhook = async (req, res) => {
           await booking.save();
           break;
         }
+        const boBooking = await BusinessOwnerBooking.findOne({ paymentIntentId: data.id });
+        if (boBooking) {
+          boBooking.paymentIntentStatus = 'canceled';
+          await boBooking.save();
+          break;
+        }
         const dueBooking = await Booking.findOne({ duePaymentIntentId: data.id });
         if (dueBooking) {
           dueBooking.duePaymentIntentStatus = 'canceled';
           await dueBooking.save();
+          break;
+        }
+        const dueBoBooking = await BusinessOwnerBooking.findOne({ duePaymentIntentId: data.id });
+        if (dueBoBooking) {
+          dueBoBooking.duePaymentIntentStatus = 'canceled';
+          await dueBoBooking.save();
           break;
         }
         const Appointment = require('../models/Appointment');
@@ -121,6 +206,14 @@ const handleStripeWebhook = async (req, res) => {
         if (appointment) {
           appointment.paymentIntentStatus = 'canceled';
           await appointment.save();
+          break;
+        }
+        const boAppointment =
+          await BusinessOwnerAppointment.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.businessOwnerAppointmentId ? await BusinessOwnerAppointment.findById(data.metadata.businessOwnerAppointmentId) : null);
+        if (boAppointment) {
+          boAppointment.paymentIntentStatus = 'canceled';
+          await boAppointment.save();
         }
         break;
       }

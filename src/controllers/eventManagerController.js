@@ -3,6 +3,7 @@ const EventManager = require('../models/EventManager');
 const RefreshToken = require('../models/RefreshToken');
 const EventManagerRegistrationOTP = require('../models/EventManagerRegistrationOTP');
 const { getTokenExpiresIn } = require('../utility/jwt');
+const { upsertDeviceToken } = require('../utility/deviceToken');
 const fs = require('fs').promises;
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utility/cloudinary');
 const crypto = require('crypto');
@@ -491,7 +492,7 @@ exports.verifyEventManagerRegistrationOTP = async (req, res) => {
  */
 exports.loginEventManager = async (req, res) => {
   try {
-    const { email, phoneNumber, password } = req.body;
+    const { email, phoneNumber, password, fcmToken, platform } = req.body;
 
     // Validate input
     if ((!email && !phoneNumber) || !password) {
@@ -568,6 +569,18 @@ exports.loginEventManager = async (req, res) => {
 
     // Get access token expiration time
     const accessExpiresIn = getTokenExpiresIn('access');
+
+    if (fcmToken) {
+      try {
+        await upsertDeviceToken({
+          userId: user._id,
+          token: fcmToken,
+          platform: platform || 'unknown'
+        });
+      } catch (tokenError) {
+        console.error('Register device token on event manager login error:', tokenError);
+      }
+    }
 
     // Return success response
     res.status(200).json({

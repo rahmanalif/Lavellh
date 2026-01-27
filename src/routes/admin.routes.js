@@ -12,6 +12,12 @@ const { uploadCategoryIcon, handleUploadError } = require('../middleware/upload'
  * @access  Public
  */
 router.post('/login', adminController.loginAdmin);
+/**
+ * @route   POST /api/admin/refresh-token
+ * @desc    Refresh admin access token
+ * @access  Public
+ */
+router.post('/refresh-token', adminController.refreshAdminToken);
 
 /**
  * @route   GET /api/admin/me
@@ -26,6 +32,18 @@ router.get('/me', verifyAdminToken, adminController.getAdminProfile);
  * @access  Private (Admin)
  */
 router.get('/dashboard/stats', verifyAdminToken, adminController.getDashboardStats);
+
+/**
+ * @route   GET /api/admin/transactions
+ * @desc    Get all transactions (admin)
+ * @access  Private (Admin with canViewReports permission)
+ */
+router.get(
+  '/transactions',
+  verifyAdminToken,
+  requirePermission('canViewReports'),
+  adminController.getTransactions
+);
 
 // ============ PROVIDER MANAGEMENT ============
 
@@ -116,6 +134,18 @@ router.get(
 );
 
 /**
+ * @route   GET /api/admin/users/:id
+ * @desc    Get user by ID
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/users/:id',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getUserById
+);
+
+/**
  * @route   PUT /api/admin/users/:id/toggle-status
  * @desc    Toggle user active/inactive status (block/unblock)
  * @access  Private (Admin with canManageUsers permission)
@@ -166,6 +196,30 @@ router.get(
 );
 
 /**
+ * @route   GET /api/admin/business-owners/:id/employees
+ * @desc    Get employees for a business owner
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/business-owners/:id/employees',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getBusinessOwnerEmployees
+);
+
+/**
+ * @route   GET /api/admin/employees/:id
+ * @desc    Get employee details
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/employees/:id',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getEmployeeDetails
+);
+
+/**
  * @route   PUT /api/admin/business-owners/:id/toggle-status
  * @desc    Block/Unblock business owner
  * @access  Private (Admin with canManageUsers permission)
@@ -213,6 +267,18 @@ router.get(
   verifyAdminToken,
   requirePermission('canManageUsers'),
   adminController.getEventManagerDetails
+);
+
+/**
+ * @route   GET /api/admin/event-managers/:id/events
+ * @desc    Get events for a specific event manager
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/event-managers/:id/events',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getEventManagerEvents
 );
 
 /**

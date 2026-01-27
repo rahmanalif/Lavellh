@@ -5,6 +5,7 @@ const RefreshToken = require('../models/RefreshToken');
 const ProviderRegistrationOTP = require('../models/ProviderRegistrationOTP');
 const ocrService = require('../utility/ocrService');
 const { getTokenExpiresIn } = require('../utility/jwt');
+const { upsertDeviceToken } = require('../utility/deviceToken');
 const { sendRegistrationOTPEmail, sendOTPEmail } = require('../utility/emailService');
 const { sendRegistrationOTPSMS, sendOTPSMS } = require('../utility/smsService');
 const fs = require('fs').promises;
@@ -439,7 +440,7 @@ exports.verifyProviderRegistrationOTP = async (req, res) => {
  */
 exports.loginProvider = async (req, res) => {
   try {
-    const { email, phoneNumber, password } = req.body;
+    const { email, phoneNumber, password, fcmToken, platform } = req.body;
 
     // Validate input
     if ((!email && !phoneNumber) || !password) {
@@ -525,6 +526,18 @@ exports.loginProvider = async (req, res) => {
 
     // Get access token expiration time
     const accessExpiresIn = getTokenExpiresIn('access');
+
+    if (fcmToken) {
+      try {
+        await upsertDeviceToken({
+          userId: user._id,
+          token: fcmToken,
+          platform: platform || 'unknown'
+        });
+      } catch (tokenError) {
+        console.error('Register device token on provider login error:', tokenError);
+      }
+    }
 
     // Return success response
     res.status(200).json({

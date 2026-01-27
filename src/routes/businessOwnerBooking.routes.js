@@ -18,6 +18,27 @@ router.post('/', auth, businessOwnerBookingController.createBusinessOwnerBooking
 router.get('/my-bookings', auth, businessOwnerBookingController.getMyBusinessOwnerBookings);
 
 /**
+ * @route   GET /api/business-owner-bookings/:id/checkout-session
+ * @desc    Get checkout session URL for booking down payment
+ * @access  Private (User)
+ */
+router.get('/:id/checkout-session', auth, businessOwnerBookingController.getBusinessOwnerBookingCheckoutSession);
+
+/**
+ * @route   GET /api/business-owner-bookings/:id/due/intent
+ * @desc    Get due payment client secret
+ * @access  Private (User)
+ */
+router.get('/:id/due/intent', auth, businessOwnerBookingController.getBusinessOwnerDuePaymentIntent);
+
+/**
+ * @route   POST /api/business-owner-bookings/:id/due/confirm
+ * @desc    Confirm due payment
+ * @access  Private (User)
+ */
+router.post('/:id/due/confirm', auth, businessOwnerBookingController.confirmBusinessOwnerDuePayment);
+
+/**
  * @route   GET /api/business-owner-bookings/:id
  * @desc    Get business owner booking by ID
  * @access  Private (User)

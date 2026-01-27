@@ -4,8 +4,17 @@ const Provider = require('../models/Provider');
 const BusinessOwner = require('../models/BusinessOwner');
 const EventManager = require('../models/EventManager');
 const Settings = require('../models/Settings');
-const { generateToken } = require('../utility/jwt');
+const Employee = require('../models/Employee');
+const EmployeeService = require('../models/EmployeeService');
+const Event = require('../models/Event');
+const Booking = require('../models/Booking');
+const Appointment = require('../models/Appointment');
+const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
+const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
+const AdminRefreshToken = require('../models/AdminRefreshToken');
+const { generateAccessToken, generateRefreshToken, getTokenExpiresIn, verifyRefreshToken } = require('../utility/jwt');
 const { deleteFromCloudinary } = require('../utility/cloudinary');
+const crypto = require('crypto');
 
 // Simple HTML sanitizer function to prevent XSS
 // For production, consider using a library like 'sanitize-html' or 'DOMPurify'
@@ -72,10 +81,24 @@ exports.loginAdmin = async (req, res) => {
     // Update last login
     await admin.updateLastLogin();
 
-    // Generate JWT token (different from user/provider tokens)
-    const token = generateToken({
+    const tokenPayload = {
       adminId: admin._id,
       role: admin.role
+    };
+    const accessToken = generateAccessToken(tokenPayload);
+    const refreshToken = generateRefreshToken(tokenPayload);
+    const accessExpiresIn = getTokenExpiresIn('access');
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const refreshExpiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    await AdminRefreshToken.create({
+      adminId: admin._id,
+      token: crypto.createHash('sha256').update(refreshToken).digest('hex'),
+      expiresAt: refreshExpiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
     });
 
     res.status(200).json({
@@ -90,7 +113,10 @@ exports.loginAdmin = async (req, res) => {
           permissions: admin.permissions,
           lastLogin: admin.lastLogin
         },
-        token
+        accessToken,
+        refreshToken,
+        expiresIn: accessExpiresIn,
+        tokenType: 'Bearer'
       }
     });
 
@@ -99,6 +125,105 @@ exports.loginAdmin = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred during login',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Refresh Admin Access Token
+ * POST /api/admin/refresh-token
+ */
+exports.refreshAdminToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refresh token is required'
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = verifyRefreshToken(refreshToken);
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token'
+      });
+    }
+
+    if (!decoded.adminId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid refresh token type'
+      });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const storedToken = await AdminRefreshToken.findOne({
+      token: hashedToken,
+      adminId: decoded.adminId
+    });
+
+    if (!storedToken || !storedToken.isValid()) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token'
+      });
+    }
+
+    const admin = await Admin.findById(decoded.adminId);
+    if (!admin || !admin.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Admin not found or inactive'
+      });
+    }
+
+    const tokenPayload = {
+      adminId: admin._id,
+      role: admin.role
+    };
+    const newAccessToken = generateAccessToken(tokenPayload);
+    const newRefreshToken = generateRefreshToken(tokenPayload);
+
+    const refreshExpiresIn = getTokenExpiresIn('refresh');
+    const refreshExpiresAt = new Date(Date.now() + refreshExpiresIn * 1000);
+
+    storedToken.isRevoked = true;
+    storedToken.lastUsedAt = new Date();
+    await storedToken.save();
+
+    await AdminRefreshToken.create({
+      adminId: admin._id,
+      token: crypto.createHash('sha256').update(newRefreshToken).digest('hex'),
+      expiresAt: refreshExpiresAt,
+      deviceInfo: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress
+      }
+    });
+
+    const accessExpiresIn = getTokenExpiresIn('access');
+
+    return res.status(200).json({
+      success: true,
+      message: 'Token refreshed successfully',
+      data: {
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+        expiresIn: accessExpiresIn,
+        tokenType: 'Bearer'
+      }
+    });
+  } catch (error) {
+    console.error('Admin token refresh error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error refreshing token',
       error: error.message
     });
   }
@@ -132,12 +257,94 @@ exports.getAdminProfile = async (req, res) => {
  */
 exports.getDashboardStats = async (req, res) => {
   try {
+    const { year } = req.query;
+    const reportYear = parseInt(year, 10) || new Date().getFullYear();
+    const startOfYear = new Date(Date.UTC(reportYear, 0, 1));
+    const endOfYear = new Date(Date.UTC(reportYear + 1, 0, 1));
+
     // Get counts
     const totalUsers = await User.countDocuments({ userType: 'user' });
     const totalProviders = await Provider.countDocuments();
+    const totalBusinessOwners = await BusinessOwner.countDocuments();
+    const totalEventManagers = await EventManager.countDocuments();
     const pendingProviders = await Provider.countDocuments({ verificationStatus: 'pending' });
     const approvedProviders = await Provider.countDocuments({ verificationStatus: 'approved' });
     const rejectedProviders = await Provider.countDocuments({ verificationStatus: 'rejected' });
+
+    const paidStatuses = ['partial', 'completed', 'offline_paid'];
+
+    const [
+      bookingEarnings,
+      appointmentEarnings,
+      boBookingEarnings,
+      boAppointmentEarnings
+    ] = await Promise.all([
+      Booking.aggregate([
+        { $match: { paymentStatus: { $in: paidStatuses } } },
+        { $group: { _id: null, total: { $sum: '$platformFee' } } }
+      ]),
+      Appointment.aggregate([
+        { $match: { paymentStatus: { $in: ['completed', 'offline_paid'] } } },
+        { $group: { _id: null, total: { $sum: '$platformFee' } } }
+      ]),
+      BusinessOwnerBooking.aggregate([
+        { $match: { paymentStatus: { $in: paidStatuses } } },
+        { $group: { _id: null, total: { $sum: '$platformFee' } } }
+      ]),
+      BusinessOwnerAppointment.aggregate([
+        { $match: { paymentStatus: { $in: ['completed', 'offline_paid'] } } },
+        { $group: { _id: null, total: { $sum: '$platformFee' } } }
+      ])
+    ]);
+
+    const totalEarnings =
+      (bookingEarnings[0]?.total || 0) +
+      (appointmentEarnings[0]?.total || 0) +
+      (boBookingEarnings[0]?.total || 0) +
+      (boAppointmentEarnings[0]?.total || 0);
+
+    const monthlyPipeline = (match, collection) =>
+      collection.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: { $month: '$createdAt' },
+            total: { $sum: '$platformFee' }
+          }
+        }
+      ]);
+
+    const [monthlyBooking, monthlyAppointment, monthlyBoBooking, monthlyBoAppointment] =
+      await Promise.all([
+        monthlyPipeline(
+          { paymentStatus: { $in: paidStatuses }, createdAt: { $gte: startOfYear, $lt: endOfYear } },
+          Booking
+        ),
+        monthlyPipeline(
+          { paymentStatus: { $in: ['completed', 'offline_paid'] }, createdAt: { $gte: startOfYear, $lt: endOfYear } },
+          Appointment
+        ),
+        monthlyPipeline(
+          { paymentStatus: { $in: paidStatuses }, createdAt: { $gte: startOfYear, $lt: endOfYear } },
+          BusinessOwnerBooking
+        ),
+        monthlyPipeline(
+          { paymentStatus: { $in: ['completed', 'offline_paid'] }, createdAt: { $gte: startOfYear, $lt: endOfYear } },
+          BusinessOwnerAppointment
+        )
+      ]);
+
+    const monthlyTotals = Array.from({ length: 12 }, () => 0);
+    const addMonthly = (items) => {
+      items.forEach((row) => {
+        const idx = row._id - 1;
+        if (idx >= 0 && idx < 12) monthlyTotals[idx] += row.total || 0;
+      });
+    };
+    addMonthly(monthlyBooking);
+    addMonthly(monthlyAppointment);
+    addMonthly(monthlyBoBooking);
+    addMonthly(monthlyBoAppointment);
 
     // Get recent registrations
     const recentUsers = await User.find({ userType: 'user' })
@@ -154,6 +361,13 @@ exports.getDashboardStats = async (req, res) => {
       success: true,
       data: {
         stats: {
+          totals: {
+            totalEarnings,
+            totalUsers,
+            totalProviders,
+            totalBusinessOwners,
+            totalEventManagers
+          },
           users: {
             total: totalUsers
           },
@@ -162,6 +376,10 @@ exports.getDashboardStats = async (req, res) => {
             pending: pendingProviders,
             approved: approvedProviders,
             rejected: rejectedProviders
+          },
+          earnings: {
+            year: reportYear,
+            monthly: monthlyTotals
           }
         },
         recent: {
@@ -379,6 +597,259 @@ exports.getAllUsers = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while fetching users',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Transactions (Admin)
+ * GET /api/admin/transactions
+ * @query type, status, page, limit, search, from, to
+ */
+exports.getTransactions = async (req, res) => {
+  try {
+    const {
+      type = 'all',
+      status,
+      page = 1,
+      limit = 20,
+      search,
+      from,
+      to
+    } = req.query;
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const startDate = from ? new Date(from) : null;
+    const endDate = to ? new Date(to) : null;
+
+    const buildDateQuery = () => {
+      if (!startDate && !endDate) return {};
+      const range = {};
+      if (startDate && !Number.isNaN(startDate.getTime())) range.$gte = startDate;
+      if (endDate && !Number.isNaN(endDate.getTime())) range.$lte = endDate;
+      return Object.keys(range).length ? { createdAt: range } : {};
+    };
+
+    const dateQuery = buildDateQuery();
+
+    const matchPaymentStatus = status ? { paymentStatus: status } : {};
+    const searchRegex = search ? new RegExp(search, 'i') : null;
+
+    const results = [];
+
+    if (type === 'all' || type === 'provider') {
+      const providerBookingQuery = { ...dateQuery, ...matchPaymentStatus };
+      const providerAppointmentQuery = { ...dateQuery, ...matchPaymentStatus };
+
+      const [bookings, appointments] = await Promise.all([
+        Booking.find(providerBookingQuery)
+          .populate('userId', 'fullName email phoneNumber bankInformation')
+          .populate({
+            path: 'providerId',
+            populate: { path: 'userId', select: 'fullName email phoneNumber bankInformation' }
+          }),
+        Appointment.find(providerAppointmentQuery)
+          .populate('userId', 'fullName email phoneNumber bankInformation')
+          .populate({
+            path: 'providerId',
+            populate: { path: 'userId', select: 'fullName email phoneNumber bankInformation' }
+          })
+      ]);
+
+      bookings.forEach((b) => {
+        const userName = b.userId?.fullName || '';
+        const providerName = b.providerId?.userId?.fullName || '';
+        if (searchRegex && !searchRegex.test(userName) && !searchRegex.test(providerName)) return;
+        results.push({
+          source: 'user_provider_booking',
+          orderId: b._id,
+          transactionId: b.paymentIntentId || b.duePaymentIntentId || b.checkoutSessionId || null,
+          userName,
+          providerName,
+          paymentStatus: b.paymentStatus,
+          paymentIntentStatus: b.paymentIntentStatus,
+          duePaymentIntentStatus: b.duePaymentIntentStatus,
+          amount: b.totalAmount,
+          downPayment: b.downPayment,
+          dueAmount: b.dueAmount,
+          remainingAmount: b.remainingAmount,
+          paidVia: b.paidVia,
+          status: b.bookingStatus,
+          date: b.createdAt,
+          paidAt: b.duePaidAt || b.offlinePaidAt || null,
+          userBankInformation: b.userId?.bankInformation || null,
+          providerBankInformation: b.providerId?.userId?.bankInformation || null
+        });
+      });
+
+      appointments.forEach((a) => {
+        const userName = a.userId?.fullName || '';
+        const providerName = a.providerId?.userId?.fullName || '';
+        if (searchRegex && !searchRegex.test(userName) && !searchRegex.test(providerName)) return;
+        results.push({
+          source: 'user_provider_appointment',
+          orderId: a._id,
+          transactionId: a.paymentIntentId || a.checkoutSessionId || null,
+          userName,
+          providerName,
+          paymentStatus: a.paymentStatus,
+          paymentIntentStatus: a.paymentIntentStatus,
+          duePaymentIntentStatus: null,
+          amount: a.totalAmount,
+          downPayment: a.downPayment,
+          dueAmount: 0,
+          remainingAmount: a.remainingAmount,
+          paidVia: a.paidVia,
+          status: a.appointmentStatus,
+          date: a.createdAt,
+          paidAt: a.paidAt || null,
+          userBankInformation: a.userId?.bankInformation || null,
+          providerBankInformation: a.providerId?.userId?.bankInformation || null
+        });
+      });
+    }
+
+    if (type === 'all' || type === 'businessOwner') {
+      const boBookingQuery = { ...dateQuery, ...matchPaymentStatus };
+      const boAppointmentQuery = { ...dateQuery, ...matchPaymentStatus };
+
+      const [boBookings, boAppointments] = await Promise.all([
+        BusinessOwnerBooking.find(boBookingQuery)
+          .populate('userId', 'fullName email phoneNumber bankInformation')
+          .populate({
+            path: 'businessOwnerId',
+            populate: { path: 'userId', select: 'fullName email phoneNumber' }
+          }),
+        BusinessOwnerAppointment.find(boAppointmentQuery)
+          .populate('userId', 'fullName email phoneNumber bankInformation')
+          .populate({
+            path: 'businessOwnerId',
+            populate: { path: 'userId', select: 'fullName email phoneNumber' }
+          })
+      ]);
+
+      boBookings.forEach((b) => {
+        const userName = b.userId?.fullName || '';
+        const businessOwnerName = b.businessOwnerId?.userId?.fullName || '';
+        if (searchRegex && !searchRegex.test(userName) && !searchRegex.test(businessOwnerName)) return;
+        results.push({
+          source: 'user_business_owner_booking',
+          orderId: b._id,
+          transactionId: b.paymentIntentId || b.duePaymentIntentId || b.checkoutSessionId || null,
+          userName,
+          businessOwnerName,
+          paymentStatus: b.paymentStatus,
+          paymentIntentStatus: b.paymentIntentStatus,
+          duePaymentIntentStatus: b.duePaymentIntentStatus,
+          amount: b.totalAmount,
+          downPayment: b.downPayment,
+          dueAmount: b.dueAmount,
+          remainingAmount: b.remainingAmount,
+          paidVia: b.paidVia,
+          status: b.bookingStatus,
+          date: b.createdAt,
+          paidAt: b.duePaidAt || b.offlinePaidAt || null,
+          userBankInformation: b.userId?.bankInformation || null,
+          businessOwnerBankInformation: b.businessOwnerId?.bankInformation || null
+        });
+      });
+
+      boAppointments.forEach((a) => {
+        const userName = a.userId?.fullName || '';
+        const businessOwnerName = a.businessOwnerId?.userId?.fullName || '';
+        if (searchRegex && !searchRegex.test(userName) && !searchRegex.test(businessOwnerName)) return;
+        results.push({
+          source: 'user_business_owner_appointment',
+          orderId: a._id,
+          transactionId: a.paymentIntentId || a.checkoutSessionId || null,
+          userName,
+          businessOwnerName,
+          paymentStatus: a.paymentStatus,
+          paymentIntentStatus: a.paymentIntentStatus,
+          duePaymentIntentStatus: null,
+          amount: a.totalAmount,
+          downPayment: a.downPayment,
+          dueAmount: 0,
+          remainingAmount: a.remainingAmount,
+          paidVia: a.paidVia,
+          status: a.appointmentStatus,
+          date: a.createdAt,
+          paidAt: a.paidAt || null,
+          userBankInformation: a.userId?.bankInformation || null,
+          businessOwnerBankInformation: a.businessOwnerId?.bankInformation || null
+        });
+      });
+    }
+
+    if (type === 'eventManager') {
+      // No event purchase model found in the codebase; return empty list for now.
+    }
+
+    results.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    const total = results.length;
+    const totalPages = Math.ceil(total / limitNum);
+    const start = (pageNum - 1) * limitNum;
+    const data = results.slice(start, start + limitNum);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        transactions: data,
+        total,
+        currentPage: pageNum,
+        totalPages,
+        filters: {
+          type,
+          status: status || null,
+          search: search || null,
+          from: from || null,
+          to: to || null
+        },
+        eventManagerTransactionsSupported: false
+      }
+    });
+  } catch (error) {
+    console.error('Get transactions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching transactions',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get User by ID
+ * GET /api/admin/users/:id
+ */
+exports.getUserById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findOne({ _id: id, userType: 'user' })
+      .select('-password -resetPasswordOTP -resetPasswordOTPExpires');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        user
+      }
+    });
+  } catch (error) {
+    console.error('Get user by ID error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching user',
       error: error.message
     });
   }
@@ -1010,7 +1481,9 @@ exports.getBusinessOwnerDetails = async (req, res) => {
     const { id } = req.params;
 
     const businessOwner = await BusinessOwner.findById(id)
-      .populate('userId', '-password -resetPasswordOTP -resetPasswordOTPExpires');
+      .populate('userId', '-password -resetPasswordOTP -resetPasswordOTPExpires')
+      .populate('businessCategory', 'name')
+      .populate('businessProfile.categories', 'name');
 
     if (!businessOwner) {
       return res.status(404).json({
@@ -1019,10 +1492,15 @@ exports.getBusinessOwnerDetails = async (req, res) => {
       });
     }
 
+    const totalEmployees = await Employee.countDocuments({ businessOwnerId: businessOwner._id });
+
     res.status(200).json({
       success: true,
       data: {
-        businessOwner
+        businessOwner: {
+          ...businessOwner.toObject(),
+          totalEmployees
+        }
       }
     });
 
@@ -1031,6 +1509,165 @@ exports.getBusinessOwnerDetails = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while fetching business owner details',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Business Owner Employees
+ * GET /api/admin/business-owners/:id/employees
+ */
+exports.getBusinessOwnerEmployees = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 20, search } = req.query;
+
+    const businessOwner = await BusinessOwner.findById(id);
+    if (!businessOwner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business owner not found'
+      });
+    }
+
+    const query = { businessOwnerId: id };
+    if (search) {
+      query.$or = [
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { mobileNumber: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const employees = await Employee.find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const count = await Employee.countDocuments(query);
+
+    const employeeIds = employees.map((e) => e._id);
+    const serviceCounts = await EmployeeService.aggregate([
+      { $match: { employeeId: { $in: employeeIds } } },
+      { $group: { _id: '$employeeId', count: { $sum: 1 } } }
+    ]);
+    const serviceCountMap = new Map(serviceCounts.map((s) => [s._id.toString(), s.count]));
+
+    const data = employees.map((e) => ({
+      ...e.toObject(),
+      serviceCount: serviceCountMap.get(e._id.toString()) || 0
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        businessOwnerId: id,
+        employees: data,
+        totalPages: Math.ceil(count / limit),
+        currentPage: parseInt(page),
+        total: count
+      }
+    });
+  } catch (error) {
+    console.error('Get business owner employees error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching employees',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Employee Details (Admin)
+ * GET /api/admin/employees/:id
+ */
+exports.getEmployeeDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const employee = await Employee.findById(id)
+      .populate('businessOwnerId', 'businessName businessCategory businessAddress');
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: 'Employee not found'
+      });
+    }
+
+    const services = await EmployeeService.find({ employeeId: id })
+      .select('headline description basePrice appointmentEnabled isActive servicePhoto category createdAt updatedAt');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        employee,
+        services
+      }
+    });
+  } catch (error) {
+    console.error('Get employee details error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching employee details',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Events for an Event Manager (Admin)
+ * GET /api/admin/event-managers/:id/events
+ */
+exports.getEventManagerEvents = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 20, search, status } = req.query;
+
+    const eventManager = await EventManager.findById(id);
+    if (!eventManager) {
+      return res.status(404).json({
+        success: false,
+        message: 'Event manager not found'
+      });
+    }
+
+    const query = { eventManagerId: id };
+    if (status) {
+      query.status = status;
+    }
+    if (search) {
+      query.$or = [
+        { eventName: { $regex: search, $options: 'i' } },
+        { eventLocation: { $regex: search, $options: 'i' } },
+        { eventManagerName: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const events = await Event.find(query)
+      .sort({ eventStartDateTime: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const count = await Event.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        eventManagerId: id,
+        events,
+        totalPages: Math.ceil(count / limit),
+        currentPage: parseInt(page),
+        total: count
+      }
+    });
+  } catch (error) {
+    console.error('Get event manager events error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching events',
       error: error.message
     });
   }

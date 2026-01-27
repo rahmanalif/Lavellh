@@ -35,6 +35,13 @@ router.get('/', auth, providerBookingController.getProviderBookings);
 router.get('/:id', auth, providerBookingController.getBookingDetails);
 
 /**
+ * @route   GET /api/providers/bookings/:id/payment-status
+ * @desc    Get payment status for a booking (provider)
+ * @access  Private (Provider)
+ */
+router.get('/:id/payment-status', auth, providerBookingController.getProviderBookingPaymentStatus);
+
+/**
  * @route   PATCH /api/providers/bookings/:id/accept
  * @desc    Accept/Confirm a booking request
  * @access  Private (Provider)
