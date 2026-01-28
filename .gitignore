@@ -10,4 +10,5 @@ uploads/**/
 # Firebase Admin SDK
 ayudame-59741-firebase-adminsdk-fbsvc-e909e68704.json
 *.firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
 

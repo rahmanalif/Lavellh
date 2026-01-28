@@ -2,6 +2,8 @@ const { getStripe } = require('../utility/stripe');
 const Booking = require('../models/Booking');
 const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
 const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
+const EventTicketPurchase = require('../models/EventTicketPurchase');
+const Event = require('../models/Event');
 
 const handleStripeWebhook = async (req, res) => {
   let event;
@@ -23,6 +25,64 @@ const handleStripeWebhook = async (req, res) => {
     const data = event.data?.object;
 
     switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = data;
+        const paymentIntentId = session.payment_intent;
+        const paymentStatus = session.payment_status;
+
+        if (session?.id) {
+          const booking = await Booking.findOne({ checkoutSessionId: session.id });
+          if (booking) {
+            if (paymentIntentId) booking.paymentIntentId = paymentIntentId;
+            if (paymentStatus === 'paid') {
+              booking.paymentIntentStatus = 'succeeded';
+              booking.paymentStatus = 'partial';
+            }
+            await booking.save();
+            break;
+          }
+
+          const boBooking = await BusinessOwnerBooking.findOne({ checkoutSessionId: session.id });
+          if (boBooking) {
+            if (paymentIntentId) boBooking.paymentIntentId = paymentIntentId;
+            if (paymentStatus === 'paid') {
+              boBooking.paymentIntentStatus = 'succeeded';
+              boBooking.paymentStatus = 'partial';
+            }
+            await boBooking.save();
+            break;
+          }
+
+          const Appointment = require('../models/Appointment');
+          const appointment = await Appointment.findOne({ checkoutSessionId: session.id });
+          if (appointment) {
+            if (paymentIntentId) appointment.paymentIntentId = paymentIntentId;
+            if (paymentStatus === 'paid') {
+              appointment.paymentIntentStatus = 'succeeded';
+              appointment.paymentStatus = 'completed';
+              appointment.paidVia = 'online';
+              appointment.paidAt = new Date();
+              appointment.remainingAmount = 0;
+            }
+            await appointment.save();
+            break;
+          }
+
+          const boAppointment = await BusinessOwnerAppointment.findOne({ checkoutSessionId: session.id });
+          if (boAppointment) {
+            if (paymentIntentId) boAppointment.paymentIntentId = paymentIntentId;
+            if (paymentStatus === 'paid') {
+              boAppointment.paymentIntentStatus = 'succeeded';
+              boAppointment.paymentStatus = 'completed';
+              boAppointment.paidVia = 'online';
+              boAppointment.paidAt = new Date();
+              boAppointment.remainingAmount = 0;
+            }
+            await boAppointment.save();
+          }
+        }
+        break;
+      }
       case 'payment_intent.amount_capturable_updated': {
         const booking =
           await Booking.findOne({ paymentIntentId: data.id }) ||
@@ -121,6 +181,23 @@ const handleStripeWebhook = async (req, res) => {
           boAppointment.remainingAmount = 0;
           await boAppointment.save();
         }
+
+        const ticketPurchase =
+          await EventTicketPurchase.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.eventTicketPurchaseId ? await EventTicketPurchase.findById(data.metadata.eventTicketPurchaseId) : null);
+        if (ticketPurchase) {
+          ticketPurchase.paymentIntentId = data.id;
+          ticketPurchase.paymentIntentStatus = data.status;
+          ticketPurchase.paymentStatus = 'completed';
+          ticketPurchase.paidAt = new Date();
+          await ticketPurchase.save();
+
+          const event = await Event.findById(ticketPurchase.eventId);
+          if (event) {
+            event.ticketsSold += ticketPurchase.quantity;
+            await event.save();
+          }
+        }
         break;
       }
       case 'payment_intent.payment_failed': {
@@ -171,6 +248,15 @@ const handleStripeWebhook = async (req, res) => {
           boAppointment.paymentIntentId = data.id;
           boAppointment.paymentIntentStatus = data.status;
           await boAppointment.save();
+          break;
+        }
+        const ticketPurchase =
+          await EventTicketPurchase.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.eventTicketPurchaseId ? await EventTicketPurchase.findById(data.metadata.eventTicketPurchaseId) : null);
+        if (ticketPurchase) {
+          ticketPurchase.paymentIntentStatus = data.status;
+          ticketPurchase.paymentStatus = 'failed';
+          await ticketPurchase.save();
         }
         break;
       }
@@ -214,6 +300,15 @@ const handleStripeWebhook = async (req, res) => {
         if (boAppointment) {
           boAppointment.paymentIntentStatus = 'canceled';
           await boAppointment.save();
+          break;
+        }
+        const ticketPurchase =
+          await EventTicketPurchase.findOne({ paymentIntentId: data.id }) ||
+          (data.metadata?.eventTicketPurchaseId ? await EventTicketPurchase.findById(data.metadata.eventTicketPurchaseId) : null);
+        if (ticketPurchase) {
+          ticketPurchase.paymentIntentStatus = 'canceled';
+          ticketPurchase.paymentStatus = 'failed';
+          await ticketPurchase.save();
         }
         break;
       }

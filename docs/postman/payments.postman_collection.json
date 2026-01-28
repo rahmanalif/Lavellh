@@ -1,0 +1,267 @@
+{
+  "info": {
+    "_postman_id": "9b2a9f5b-2c2a-4a20-9f1f-2b7b3e0f9a2a",
+    "name": "Lavellh - Payments (Provider + Business Owner)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Provider Payments",
+      "item": [
+        {
+          "name": "Provider Accept Booking (create down payment session)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{provider_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/bookings/{{booking_id}}/accept",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers", "bookings", "{{booking_id}}", "accept"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerNotes\": \"See you on the scheduled date!\"\n}"
+            }
+          }
+        },
+        {
+          "name": "User Get Booking Checkout Session",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{user_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/bookings/{{booking_id}}/checkout-session",
+              "host": ["{{base_url}}"],
+              "path": ["api", "bookings", "{{booking_id}}", "checkout-session"]
+            }
+          }
+        },
+        {
+          "name": "Provider Request Due Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{provider_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/bookings/{{booking_id}}/request-due",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers", "bookings", "{{booking_id}}", "request-due"]
+            }
+          }
+        },
+        {
+          "name": "User Get Due Payment Intent",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{user_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/bookings/{{booking_id}}/due/intent",
+              "host": ["{{base_url}}"],
+              "path": ["api", "bookings", "{{booking_id}}", "due", "intent"]
+            }
+          }
+        },
+        {
+          "name": "User Confirm Due Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{user_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/bookings/{{booking_id}}/due/confirm",
+              "host": ["{{base_url}}"],
+              "path": ["api", "bookings", "{{booking_id}}", "due", "confirm"]
+            }
+          }
+        },
+        {
+          "name": "Provider Mark Offline Paid",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{provider_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/bookings/{{booking_id}}/mark-offline-paid",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers", "bookings", "{{booking_id}}", "mark-offline-paid"]
+            }
+          }
+        },
+        {
+          "name": "User Payment Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{user_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/bookings/{{booking_id}}/payment-status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "bookings", "{{booking_id}}", "payment-status"]
+            }
+          }
+        },
+        {
+          "name": "Provider Payment Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{provider_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/bookings/{{booking_id}}/payment-status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers", "bookings", "{{booking_id}}", "payment-status"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Business Owner Payments",
+      "item": [
+        {
+          "name": "Business Owner Accept Booking (create down payment session)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{business_owner_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/business-owners/bookings/{{bo_booking_id}}/accept",
+              "host": ["{{base_url}}"],
+              "path": ["api", "business-owners", "bookings", "{{bo_booking_id}}", "accept"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerNotes\": \"Confirmed\"\n}"
+            }
+          }
+        },
+        {
+          "name": "User Get BO Booking Checkout Session",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{user_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/business-owner-bookings/{{bo_booking_id}}/checkout-session",
+              "host": ["{{base_url}}"],
+              "path": ["api", "business-owner-bookings", "{{bo_booking_id}}", "checkout-session"]
+            }
+          }
+        },
+        {
+          "name": "Business Owner Request Due Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{business_owner_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/business-owners/bookings/{{bo_booking_id}}/request-due",
+              "host": ["{{base_url}}"],
+              "path": ["api", "business-owners", "bookings", "{{bo_booking_id}}", "request-due"]
+            }
+          }
+        },
+        {
+          "name": "User Get BO Due Payment Intent",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{user_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/business-owner-bookings/{{bo_booking_id}}/due/intent",
+              "host": ["{{base_url}}"],
+              "path": ["api", "business-owner-bookings", "{{bo_booking_id}}", "due", "intent"]
+            }
+          }
+        },
+        {
+          "name": "User Confirm BO Due Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{user_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/business-owner-bookings/{{bo_booking_id}}/due/confirm",
+              "host": ["{{base_url}}"],
+              "path": ["api", "business-owner-bookings", "{{bo_booking_id}}", "due", "confirm"]
+            }
+          }
+        },
+        {
+          "name": "Business Owner Mark Offline Paid",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{business_owner_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/business-owners/bookings/{{bo_booking_id}}/mark-offline-paid",
+              "host": ["{{base_url}}"],
+              "path": ["api", "business-owners", "bookings", "{{bo_booking_id}}", "mark-offline-paid"]
+            }
+          }
+        },
+        {
+          "name": "Business Owner Accept Appointment (full payment session)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{business_owner_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/business-owners/appointments/{{bo_appointment_id}}/accept",
+              "host": ["{{base_url}}"],
+              "path": ["api", "business-owners", "appointments", "{{bo_appointment_id}}", "accept"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerNotes\": \"Confirmed\"\n}"
+            }
+          }
+        },
+        {
+          "name": "User Get BO Appointment Checkout Session",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{user_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/business-owner-appointments/{{bo_appointment_id}}/checkout-session",
+              "host": ["{{base_url}}"],
+              "path": ["api", "business-owner-appointments", "{{bo_appointment_id}}", "checkout-session"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:5100" },
+    { "key": "user_token", "value": "" },
+    { "key": "provider_token", "value": "" },
+    { "key": "business_owner_token", "value": "" },
+    { "key": "booking_id", "value": "" },
+    { "key": "bo_booking_id", "value": "" },
+    { "key": "bo_appointment_id", "value": "" }
+  ]
+}

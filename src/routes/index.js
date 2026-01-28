@@ -24,6 +24,8 @@ const businessOwnerAppointmentRoutes = require('./businessOwnerAppointment.route
 const notificationRoutes = require('./notification.routes');
 const conversationRoutes = require('./conversation.routes');
 const businessOwnerWishlistRoutes = require('./businessOwnerWishlist.routes');
+const eventTicketController = require('../controllers/eventTicketController');
+const auth = require('../middleware/auth');
 
 // Use auth routes
 router.use('/auth', authRoutes);
@@ -87,6 +89,11 @@ router.use('/notifications', notificationRoutes);
 
 // Use conversation routes (authenticated)
 router.use('/conversations', conversationRoutes);
+
+// Event ticket purchase (user)
+router.post('/events/:id/buy-tickets', auth, eventTicketController.buyTickets);
+router.get('/events/my-tickets', auth, eventTicketController.getMyTicketPurchases);
+router.get('/events/tickets/:id', auth, eventTicketController.getTicketPurchaseById);
 
 // Business owner employee wishlist routes
 router.use('/business-owners/wishlist', businessOwnerWishlistRoutes);

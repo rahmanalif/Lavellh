@@ -235,6 +235,13 @@ router.post('/bookings/:id/request-due', auth, businessOwnerBookingController.re
 router.post('/bookings/:id/mark-offline-paid', auth, businessOwnerBookingController.markBusinessOwnerOfflinePaid);
 
 /**
+ * @route   GET /api/business-owners/bookings/:id/payment-status
+ * @desc    Get payment status for a booking (business owner)
+ * @access  Private (Business Owner)
+ */
+router.get('/bookings/:id/payment-status', auth, businessOwnerBookingController.getBusinessOwnerBookingPaymentStatusForOwner);
+
+/**
  * @route   PATCH /api/business-owners/bookings/:id/reject
  * @desc    Reject a booking request
  * @access  Private (Business Owner only)

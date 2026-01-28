@@ -783,8 +783,50 @@ exports.getTransactions = async (req, res) => {
       });
     }
 
-    if (type === 'eventManager') {
-      // No event purchase model found in the codebase; return empty list for now.
+    if (type === 'all' || type === 'eventManager') {
+      const ticketQuery = { ...dateQuery, ...matchPaymentStatus };
+
+      const ticketPurchases = await EventTicketPurchase.find(ticketQuery)
+        .populate('userId', 'fullName email phoneNumber bankInformation')
+        .populate('eventId', 'eventName eventLocation eventStartDateTime eventEndDateTime ticketPrice')
+        .populate({
+          path: 'eventManagerId',
+          populate: { path: 'userId', select: 'fullName email phoneNumber' }
+        });
+
+      ticketPurchases.forEach((t) => {
+        const userName = t.userId?.fullName || '';
+        const eventManagerName = t.eventManagerId?.userId?.fullName || '';
+        if (searchRegex && !searchRegex.test(userName) && !searchRegex.test(eventManagerName)) return;
+        results.push({
+          source: 'user_event_manager_ticket',
+          orderId: t._id,
+          transactionId: t.paymentIntentId || t.checkoutSessionId || null,
+          userName,
+          eventManagerName,
+          paymentStatus: t.paymentStatus,
+          paymentIntentStatus: t.paymentIntentStatus,
+          duePaymentIntentStatus: null,
+          amount: t.totalAmount,
+          downPayment: 0,
+          dueAmount: 0,
+          remainingAmount: 0,
+          paidVia: t.paymentStatus === 'completed' ? 'online' : null,
+          status: t.paymentStatus,
+          date: t.createdAt,
+          paidAt: t.paidAt || null,
+          userBankInformation: t.userId?.bankInformation || null,
+          eventManagerBankInformation: null,
+          event: {
+            id: t.eventId?._id || null,
+            name: t.eventId?.eventName || null,
+            location: t.eventId?.eventLocation || null,
+            startDateTime: t.eventId?.eventStartDateTime || null,
+            endDateTime: t.eventId?.eventEndDateTime || null
+          },
+          quantity: t.quantity
+        });
+      });
     }
 
     results.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -808,7 +850,7 @@ exports.getTransactions = async (req, res) => {
           from: from || null,
           to: to || null
         },
-        eventManagerTransactionsSupported: false
+        eventManagerTransactionsSupported: true
       }
     });
   } catch (error) {

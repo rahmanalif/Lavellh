@@ -2011,6 +2011,108 @@ exports.confirmBusinessOwnerDuePayment = async (req, res) => {
 };
 
 /**
+ * @desc    Get payment status for a business owner booking (user)
+ * @route   GET /api/business-owner-bookings/:id/payment-status
+ * @access  Private (User)
+ */
+exports.getBusinessOwnerBookingPaymentStatus = async (req, res) => {
+  try {
+    const booking = await BusinessOwnerBooking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        bookingId: booking._id,
+        bookingStatus: booking.bookingStatus,
+        paymentStatus: booking.paymentStatus,
+        paymentIntentStatus: booking.paymentIntentStatus,
+        duePaymentIntentStatus: booking.duePaymentIntentStatus,
+        paidVia: booking.paidVia,
+        totalAmount: booking.totalAmount,
+        downPayment: booking.downPayment,
+        dueAmount: booking.dueAmount,
+        remainingAmount: booking.remainingAmount,
+        dueRequestedAt: booking.dueRequestedAt,
+        duePaidAt: booking.duePaidAt,
+        offlinePaidAt: booking.offlinePaidAt
+      }
+    });
+  } catch (error) {
+    console.error('Get business owner booking payment status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching payment status',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * @desc    Get payment status for a business owner booking (business owner)
+ * @route   GET /api/business-owners/bookings/:id/payment-status
+ * @access  Private (Business Owner)
+ */
+exports.getBusinessOwnerBookingPaymentStatusForOwner = async (req, res) => {
+  try {
+    const businessOwner = await getBusinessOwnerFromUser(req.user._id);
+    const booking = await BusinessOwnerBooking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.businessOwnerId.toString() !== businessOwner._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        bookingId: booking._id,
+        bookingStatus: booking.bookingStatus,
+        paymentStatus: booking.paymentStatus,
+        paymentIntentStatus: booking.paymentIntentStatus,
+        duePaymentIntentStatus: booking.duePaymentIntentStatus,
+        paidVia: booking.paidVia,
+        totalAmount: booking.totalAmount,
+        downPayment: booking.downPayment,
+        dueAmount: booking.dueAmount,
+        remainingAmount: booking.remainingAmount,
+        dueRequestedAt: booking.dueRequestedAt,
+        duePaidAt: booking.duePaidAt,
+        offlinePaidAt: booking.offlinePaidAt
+      }
+    });
+  } catch (error) {
+    console.error('Get business owner booking payment status (owner) error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching payment status',
+      error: error.message
+    });
+  }
+};
+
+/**
  * @desc    Request due payment for a completed booking (business owner)
  * @route   POST /api/business-owners/bookings/:id/request-due
  * @access  Private (Business Owner)

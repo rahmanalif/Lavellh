@@ -18,6 +18,13 @@ router.post('/', auth, businessOwnerBookingController.createBusinessOwnerBooking
 router.get('/my-bookings', auth, businessOwnerBookingController.getMyBusinessOwnerBookings);
 
 /**
+ * @route   GET /api/business-owner-bookings/:id/payment-status
+ * @desc    Get payment status for a booking
+ * @access  Private (User)
+ */
+router.get('/:id/payment-status', auth, businessOwnerBookingController.getBusinessOwnerBookingPaymentStatus);
+
+/**
  * @route   GET /api/business-owner-bookings/:id/checkout-session
  * @desc    Get checkout session URL for booking down payment
  * @access  Private (User)
