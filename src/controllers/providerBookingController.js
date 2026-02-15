@@ -156,35 +156,12 @@ exports.acceptBooking = async (req, res) => {
     }
     await booking.save();
 
-    let sessionUrl = null;
+    let clientSecret = null;
     try {
-      const successUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL;
-      const cancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL;
-      if (!successUrl || !cancelUrl) {
-        return res.status(500).json({
-          success: false,
-          message: 'Stripe checkout URLs not configured'
-        });
-      }
-
       const stripe = getStripe();
-      const session = await stripe.checkout.sessions.create({
-        mode: 'payment',
-        payment_method_types: ['card'],
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'usd',
-              unit_amount: Math.round(booking.downPayment * 100),
-              product_data: {
-                name: booking.serviceSnapshot?.serviceName || 'Service booking down payment'
-              }
-            }
-          }
-        ],
-        success_url: successUrl,
-        cancel_url: cancelUrl,
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(booking.downPayment * 100),
+        currency: 'usd',
         metadata: {
           bookingId: booking._id.toString(),
           userId: booking.userId.toString(),
@@ -193,18 +170,16 @@ exports.acceptBooking = async (req, res) => {
         }
       });
 
-      booking.paymentIntentId = session.payment_intent || booking.paymentIntentId;
-      booking.paymentIntentStatus = 'requires_payment_method';
-      booking.checkoutSessionId = session.id;
-      booking.checkoutSessionUrl = session.url;
+      booking.paymentIntentId = paymentIntent.id;
+      booking.paymentIntentStatus = paymentIntent.status;
       await booking.save();
 
-      sessionUrl = session.url;
+      clientSecret = paymentIntent.client_secret;
     } catch (stripeError) {
       console.error('Stripe checkout session error:', stripeError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to create checkout session',
+        message: 'Failed to create payment intent',
         error: stripeError.message
       });
     }
@@ -217,28 +192,22 @@ exports.acceptBooking = async (req, res) => {
       message: 'Booking accepted successfully',
       data: {
         booking,
-        checkout: {
-          sessionUrl
-        }
+        checkout: { clientSecret }
       }
     });
 
-    if (sessionUrl) {
-      await createAndSend({
-        userId: booking.userId,
-        userType: 'user',
-        title: 'Booking accepted',
-        body: 'Your booking was accepted. Please complete the down payment.',
-        type: 'booking_payment',
-        entityType: 'booking',
-        entityId: booking._id,
-        metadata: { sessionUrl },
-        data: {
-          bookingId: booking._id.toString(),
-          sessionUrl
-        }
-      });
-    }
+    await createAndSend({
+      userId: booking.userId,
+      userType: 'user',
+      title: 'Booking accepted',
+      body: 'Your booking was accepted. Please complete the down payment.',
+      type: 'booking_payment',
+      entityType: 'booking',
+      entityId: booking._id,
+      data: {
+        bookingId: booking._id.toString()
+      }
+    });
 
   } catch (error) {
     console.error('Accept booking error:', error);
@@ -577,17 +546,8 @@ exports.acceptAppointment = async (req, res) => {
     }
     await appointment.save();
 
-    let sessionUrl = null;
+    let clientSecret = null;
     try {
-      const successUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL;
-      const cancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL;
-      if (!successUrl || !cancelUrl) {
-        return res.status(500).json({
-          success: false,
-          message: 'Stripe checkout URLs not configured'
-        });
-      }
-
       const totalAmount = appointment.totalAmount;
       const platformFee = Math.round(totalAmount * 0.1 * 100) / 100;
       const providerPayoutFromPayment = Math.max(totalAmount - platformFee, 0);
@@ -595,23 +555,9 @@ exports.acceptAppointment = async (req, res) => {
       appointment.providerPayoutFromPayment = providerPayoutFromPayment;
 
       const stripe = getStripe();
-      const session = await stripe.checkout.sessions.create({
-        mode: 'payment',
-        payment_method_types: ['card'],
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'usd',
-              unit_amount: Math.round(totalAmount * 100),
-              product_data: {
-                name: appointment.serviceSnapshot?.serviceName || 'Service appointment payment'
-              }
-            }
-          }
-        ],
-        success_url: successUrl,
-        cancel_url: cancelUrl,
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(totalAmount * 100),
+        currency: 'usd',
         metadata: {
           appointmentId: appointment._id.toString(),
           userId: appointment.userId.toString(),
@@ -620,18 +566,16 @@ exports.acceptAppointment = async (req, res) => {
         }
       });
 
-      appointment.paymentIntentId = session.payment_intent || appointment.paymentIntentId;
-      appointment.paymentIntentStatus = 'requires_payment_method';
-      appointment.checkoutSessionId = session.id;
-      appointment.checkoutSessionUrl = session.url;
+      appointment.paymentIntentId = paymentIntent.id;
+      appointment.paymentIntentStatus = paymentIntent.status;
       await appointment.save();
 
-      sessionUrl = session.url;
+      clientSecret = paymentIntent.client_secret;
     } catch (stripeError) {
       console.error('Stripe checkout session error:', stripeError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to create checkout session',
+        message: 'Failed to create payment intent',
         error: stripeError.message
       });
     }
@@ -644,28 +588,22 @@ exports.acceptAppointment = async (req, res) => {
       message: 'Appointment accepted successfully',
       data: {
         appointment,
-        checkout: {
-          sessionUrl
-        }
+        checkout: { clientSecret }
       }
     });
 
-    if (sessionUrl) {
-      await createAndSend({
-        userId: appointment.userId,
-        userType: 'user',
-        title: 'Appointment accepted',
-        body: 'Your appointment was accepted. Please complete the payment.',
-        type: 'appointment_payment',
-        entityType: 'appointment',
-        entityId: appointment._id,
-        metadata: { sessionUrl },
-        data: {
-          appointmentId: appointment._id.toString(),
-          sessionUrl
-        }
-      });
-    }
+    await createAndSend({
+      userId: appointment.userId,
+      userType: 'user',
+      title: 'Appointment accepted',
+      body: 'Your appointment was accepted. Please complete the payment.',
+      type: 'appointment_payment',
+      entityType: 'appointment',
+      entityId: appointment._id,
+      data: {
+        appointmentId: appointment._id.toString()
+      }
+    });
 
   } catch (error) {
     console.error('Accept appointment error:', error);

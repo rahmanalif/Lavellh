@@ -43,15 +43,22 @@ exports.getFeaturedProviders = async (req, res) => {
     // Get current date to filter expired paid providers
     const now = new Date();
 
-    // Find all paid providers who are verified and active
+    // Find providers who are verified and available:
+    // - pinned providers are always eligible for featured ranking
+    // - non-pinned providers must still satisfy paid-home-screen rules
     const paidProviders = await Provider.find({
-      isPaidForHomeScreen: true,
-      $or: [
-        { paidHomeScreenExpiresAt: null },
-        { paidHomeScreenExpiresAt: { $gt: now } }
-      ],
       verificationStatus: 'verified',
-      isAvailable: true
+      isAvailable: true,
+      $or: [
+        { 'discoveryPin.isPinned': true },
+        {
+          isPaidForHomeScreen: true,
+          $or: [
+            { paidHomeScreenExpiresAt: null },
+            { paidHomeScreenExpiresAt: { $gt: now } }
+          ]
+        }
+      ],
     }).populate({
       path: 'userId',
       select: 'fullName email phoneNumber profilePicture location'
@@ -86,8 +93,10 @@ exports.getFeaturedProviders = async (req, res) => {
       })
       .filter(item => item !== null && item.distance <= maxDistance);
 
-    // Sort by distance (closest first)
-    providersWithDistance.sort((a, b) => a.distance - b.distance);
+    // Sort by admin pin first, then nearest distance for non-pinned providers.
+    providersWithDistance.sort((a, b) =>
+      comparePinnedFirst(a.provider, b.provider, () => a.distance - b.distance)
+    );
 
     // Limit results
     const limitedProviders = providersWithDistance.slice(0, parseInt(limit));
@@ -107,7 +116,11 @@ exports.getFeaturedProviders = async (req, res) => {
         // Get recent reviews
         const reviews = await Review.find({
           providerId: provider._id,
-          isActive: true
+          isActive: true,
+          $or: [
+            { moderationStatus: { $exists: false } },
+            { moderationStatus: 'active' }
+          ]
         })
           .populate('userId', 'fullName profilePicture')
           .sort({ createdAt: -1 })
@@ -193,6 +206,42 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 
   const distance = R * c; // Distance in meters
   return distance;
+}
+
+function getPinRank(entity) {
+  const discoveryPin = entity?.discoveryPin;
+  const isPinned = discoveryPin?.isPinned === true;
+  const pinOrder = Number.isInteger(discoveryPin?.pinOrder)
+    ? discoveryPin.pinOrder
+    : Number.MAX_SAFE_INTEGER;
+  const pinnedAt = discoveryPin?.pinnedAt ? new Date(discoveryPin.pinnedAt).getTime() : Number.MAX_SAFE_INTEGER;
+  const fallbackId = String(entity?._id || '');
+
+  return { isPinned, pinOrder, pinnedAt, fallbackId };
+}
+
+function comparePinnedFirst(entityA, entityB, fallbackComparator) {
+  const rankA = getPinRank(entityA);
+  const rankB = getPinRank(entityB);
+
+  if (rankA.isPinned !== rankB.isPinned) {
+    return rankA.isPinned ? -1 : 1;
+  }
+
+  if (rankA.isPinned && rankA.pinOrder !== rankB.pinOrder) {
+    return rankA.pinOrder - rankB.pinOrder;
+  }
+
+  if (rankA.isPinned && rankA.pinnedAt !== rankB.pinnedAt) {
+    return rankA.pinnedAt - rankB.pinnedAt;
+  }
+
+  const fallbackResult = fallbackComparator ? fallbackComparator(entityA, entityB) : 0;
+  if (fallbackResult !== 0) {
+    return fallbackResult;
+  }
+
+  return rankA.fallbackId.localeCompare(rankB.fallbackId);
 }
 
 /**
@@ -300,7 +349,11 @@ exports.getProviderDetails = async (req, res) => {
     // Get all reviews
     const reviews = await Review.find({
       providerId: provider._id,
-      isActive: true
+      isActive: true,
+      $or: [
+        { moderationStatus: { $exists: false } },
+        { moderationStatus: 'active' }
+      ]
     })
       .populate('userId', 'fullName profilePicture')
       .sort({ createdAt: -1 });
@@ -706,19 +759,28 @@ exports.getNearbyProvidersByCategoryId = async (req, res) => {
             price: service.basePrice,
             image: service.servicePhoto,
             appointmentEnabled: service.appointmentEnabled
-          }))
+          })),
+          _pin: provider.discoveryPin || null
         };
       })
       .filter(item => item !== null);
 
-    providersWithDistance.sort((a, b) => a.distance - b.distance);
+    providersWithDistance.sort((a, b) =>
+      comparePinnedFirst(
+        { _id: a.providerId, discoveryPin: a._pin },
+        { _id: b.providerId, discoveryPin: b._pin },
+        () => a.distance - b.distance
+      )
+    );
+
+    const rankedProviders = providersWithDistance.map(({ _pin, ...provider }) => provider);
 
     res.status(200).json({
       success: true,
       message: 'Nearby providers fetched successfully',
       data: {
-        providers: providersWithDistance,
-        totalProviders: providersWithDistance.length,
+        providers: rankedProviders,
+        totalProviders: rankedProviders.length,
         searchRadius: {
           meters: parseInt(maxDistance),
           kilometers: (parseInt(maxDistance) / 1000).toFixed(1)
@@ -821,16 +883,26 @@ exports.getProvidersByCategoryId = async (req, res) => {
           price: service.basePrice,
           image: service.servicePhoto,
           appointmentEnabled: service.appointmentEnabled
-        }))
+        })),
+        _pin: provider.discoveryPin || null
       };
     });
+
+    providersWithServices.sort((a, b) =>
+      comparePinnedFirst(
+        { _id: a.providerId, discoveryPin: a._pin },
+        { _id: b.providerId, discoveryPin: b._pin }
+      )
+    );
+
+    const rankedProviders = providersWithServices.map(({ _pin, ...provider }) => provider);
 
     res.status(200).json({
       success: true,
       message: 'Providers fetched successfully',
       data: {
-        providers: providersWithServices,
-        totalProviders: providersWithServices.length
+        providers: rankedProviders,
+        totalProviders: rankedProviders.length
       }
     });
   } catch (error) {

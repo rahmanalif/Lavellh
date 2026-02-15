@@ -75,33 +75,10 @@ exports.buyTickets = async (req, res) => {
       eventManagerPayout
     });
 
-    const successUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL;
-    const cancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL;
-    if (!successUrl || !cancelUrl) {
-      return res.status(500).json({
-        success: false,
-        message: 'Stripe checkout URLs not configured'
-      });
-    }
-
     const stripe = getStripe();
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: 'usd',
-            unit_amount: Math.round(totalAmount * 100),
-            product_data: {
-              name: `${event.eventName} - Tickets (${quantity})`
-            }
-          }
-        }
-      ],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(totalAmount * 100),
+      currency: 'usd',
       metadata: {
         eventTicketPurchaseId: purchase._id.toString(),
         eventId: event._id.toString(),
@@ -111,18 +88,16 @@ exports.buyTickets = async (req, res) => {
       }
     });
 
-    purchase.paymentIntentId = session.payment_intent || purchase.paymentIntentId;
-    purchase.paymentIntentStatus = 'requires_payment_method';
-    purchase.checkoutSessionId = session.id;
-    purchase.checkoutSessionUrl = session.url;
+    purchase.paymentIntentId = paymentIntent.id;
+    purchase.paymentIntentStatus = paymentIntent.status;
     await purchase.save();
 
     return res.status(200).json({
       success: true,
-      message: 'Checkout session created',
+      message: 'Payment intent created',
       data: {
         purchaseId: purchase._id,
-        checkout: { sessionUrl: session.url }
+        checkout: { clientSecret: paymentIntent.client_secret }
       }
     });
   } catch (error) {

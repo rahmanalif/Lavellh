@@ -648,7 +648,11 @@ exports.getServiceDetailForUser = async (req, res) => {
 
     const reviews = await Review.find({
       serviceId: service._id,
-      isActive: true
+      isActive: true,
+      $or: [
+        { moderationStatus: { $exists: false } },
+        { moderationStatus: 'active' }
+      ]
     })
       .populate('userId', 'fullName profilePicture')
       .sort({ rating: -1, createdAt: -1 })
@@ -734,7 +738,11 @@ exports.getProviderProfileForUser = async (req, res) => {
 
     const reviews = await Review.find({
       providerId: provider._id,
-      isActive: true
+      isActive: true,
+      $or: [
+        { moderationStatus: { $exists: false } },
+        { moderationStatus: 'active' }
+      ]
     })
       .populate('userId', 'fullName profilePicture')
       .sort({ createdAt: -1 })

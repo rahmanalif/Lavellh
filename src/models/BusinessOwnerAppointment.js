@@ -184,6 +184,26 @@ const businessOwnerAppointmentSchema = new mongoose.Schema({
   },
   reminderSentAt: {
     type: Date
+  },
+  moderationStatus: {
+    type: String,
+    enum: ['active', 'hidden_by_admin'],
+    default: 'active'
+  },
+  moderationReason: {
+    type: String,
+    trim: true,
+    maxlength: [500, 'Moderation reason cannot exceed 500 characters'],
+    default: null
+  },
+  moderatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Admin',
+    default: null
+  },
+  moderatedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
@@ -194,6 +214,7 @@ businessOwnerAppointmentSchema.index({ businessOwnerId: 1, appointmentDate: 1 })
 businessOwnerAppointmentSchema.index({ employeeServiceId: 1 });
 businessOwnerAppointmentSchema.index({ appointmentStatus: 1 });
 businessOwnerAppointmentSchema.index({ appointmentDate: 1, 'timeSlot.startTime': 1 });
+businessOwnerAppointmentSchema.index({ moderationStatus: 1, reviewedAt: -1 });
 
 businessOwnerAppointmentSchema.pre('validate', function(next) {
   if (this.timeSlot && this.timeSlot.startTime && this.timeSlot.endTime) {

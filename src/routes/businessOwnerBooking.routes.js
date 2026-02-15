@@ -26,7 +26,7 @@ router.get('/:id/payment-status', auth, businessOwnerBookingController.getBusine
 
 /**
  * @route   GET /api/business-owner-bookings/:id/checkout-session
- * @desc    Get checkout session URL for booking down payment
+ * @desc    Get payment client secret for booking down payment
  * @access  Private (User)
  */
 router.get('/:id/checkout-session', auth, businessOwnerBookingController.getBusinessOwnerBookingCheckoutSession);

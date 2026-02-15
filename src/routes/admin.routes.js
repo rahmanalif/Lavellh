@@ -119,6 +119,66 @@ router.delete(
   adminController.deleteProvider
 );
 
+/**
+ * @route   GET /api/admin/reviews/providers
+ * @desc    Get provider reviews for moderation
+ * @access  Private (Admin with canManageProviders permission)
+ */
+router.get(
+  '/reviews/providers',
+  verifyAdminToken,
+  requirePermission('canManageProviders'),
+  adminController.getProviderReviews
+);
+
+/**
+ * @route   PATCH /api/admin/reviews/providers/:id/hide
+ * @desc    Hide provider review
+ * @access  Private (Admin with canManageProviders permission)
+ */
+router.patch(
+  '/reviews/providers/:id/hide',
+  verifyAdminToken,
+  requirePermission('canManageProviders'),
+  adminController.hideProviderReview
+);
+
+/**
+ * @route   PATCH /api/admin/reviews/providers/:id/restore
+ * @desc    Restore provider review
+ * @access  Private (Admin with canManageProviders permission)
+ */
+router.patch(
+  '/reviews/providers/:id/restore',
+  verifyAdminToken,
+  requirePermission('canManageProviders'),
+  adminController.restoreProviderReview
+);
+
+/**
+ * @route   GET /api/admin/discovery/providers/ranking
+ * @desc    Get provider discovery ranking (pinned providers in order)
+ * @access  Private (Admin with canManageProviders permission)
+ */
+router.get(
+  '/discovery/providers/ranking',
+  verifyAdminToken,
+  requirePermission('canManageProviders'),
+  adminController.getProviderDiscoveryRanking
+);
+
+/**
+ * @route   PUT /api/admin/discovery/providers/ranking
+ * @desc    Bulk update provider discovery ranking
+ * @access  Private (Admin with canManageProviders permission)
+ */
+router.put(
+  '/discovery/providers/ranking',
+  verifyAdminToken,
+  requirePermission('canManageProviders'),
+  adminController.updateProviderDiscoveryRanking
+);
+
 // ============ USER MANAGEMENT ============
 
 /**
@@ -241,6 +301,66 @@ router.delete(
   verifyAdminToken,
   requirePermission('canManageUsers'),
   adminController.deleteBusinessOwner
+);
+
+/**
+ * @route   GET /api/admin/reviews/businesses
+ * @desc    Get business reviews for moderation
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/reviews/businesses',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getBusinessReviews
+);
+
+/**
+ * @route   PATCH /api/admin/reviews/businesses/:sourceType/:id/hide
+ * @desc    Hide business review
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.patch(
+  '/reviews/businesses/:sourceType/:id/hide',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.hideBusinessReview
+);
+
+/**
+ * @route   PATCH /api/admin/reviews/businesses/:sourceType/:id/restore
+ * @desc    Restore business review
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.patch(
+  '/reviews/businesses/:sourceType/:id/restore',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.restoreBusinessReview
+);
+
+/**
+ * @route   GET /api/admin/discovery/businesses/ranking
+ * @desc    Get business discovery ranking (pinned businesses in order)
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.get(
+  '/discovery/businesses/ranking',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.getBusinessDiscoveryRanking
+);
+
+/**
+ * @route   PUT /api/admin/discovery/businesses/ranking
+ * @desc    Bulk update business discovery ranking
+ * @access  Private (Admin with canManageUsers permission)
+ */
+router.put(
+  '/discovery/businesses/ranking',
+  verifyAdminToken,
+  requirePermission('canManageUsers'),
+  adminController.updateBusinessDiscoveryRanking
 );
 
 // ============ EVENT MANAGER MANAGEMENT ============
@@ -505,6 +625,18 @@ router.put(
   verifyAdminToken,
   requirePermission('canManageSettings'),
   adminController.updateSettings
+);
+
+/**
+ * @route   POST /api/admin/notifications/broadcast
+ * @desc    Broadcast notification to platform users
+ * @access  Private (Admin with canManageSettings permission)
+ */
+router.post(
+  '/notifications/broadcast',
+  verifyAdminToken,
+  requirePermission('canManageSettings'),
+  adminController.broadcastNotification
 );
 
 // ============ FAQ MANAGEMENT ============

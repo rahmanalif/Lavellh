@@ -130,6 +130,25 @@ const businessOwnerSchema = new mongoose.Schema({
       trim: true,
       maxlength: [50, 'Account holder type cannot exceed 50 characters']
     }
+  },
+  discoveryPin: {
+    isPinned: {
+      type: Boolean,
+      default: false
+    },
+    pinOrder: {
+      type: Number,
+      default: null
+    },
+    pinnedAt: {
+      type: Date,
+      default: null
+    },
+    pinnedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Admin',
+      default: null
+    }
   }
 }, {
   timestamps: true
@@ -137,6 +156,7 @@ const businessOwnerSchema = new mongoose.Schema({
 
 // Index for faster queries
 businessOwnerSchema.index({ userId: 1 });
+businessOwnerSchema.index({ 'discoveryPin.isPinned': 1, 'discoveryPin.pinOrder': 1 });
 
 // Virtual populate to get user details
 businessOwnerSchema.virtual('user', {

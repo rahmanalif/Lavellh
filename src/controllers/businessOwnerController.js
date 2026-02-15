@@ -21,6 +21,39 @@ const OTP_EXPIRY_MS = 10 * 60 * 1000;
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 const hashValue = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
+const getBusinessPinRank = (owner) => {
+  const discoveryPin = owner?.discoveryPin;
+  return {
+    isPinned: discoveryPin?.isPinned === true,
+    pinOrder: Number.isInteger(discoveryPin?.pinOrder) ? discoveryPin.pinOrder : Number.MAX_SAFE_INTEGER,
+    pinnedAt: discoveryPin?.pinnedAt ? new Date(discoveryPin.pinnedAt).getTime() : Number.MAX_SAFE_INTEGER,
+    fallbackId: String(owner?._id || '')
+  };
+};
+
+const compareBusinessesByPinThenRating = (a, b) => {
+  const rankA = getBusinessPinRank(a);
+  const rankB = getBusinessPinRank(b);
+
+  if (rankA.isPinned !== rankB.isPinned) {
+    return rankA.isPinned ? -1 : 1;
+  }
+
+  if (rankA.isPinned && rankA.pinOrder !== rankB.pinOrder) {
+    return rankA.pinOrder - rankB.pinOrder;
+  }
+
+  if (rankA.isPinned && rankA.pinnedAt !== rankB.pinnedAt) {
+    return rankA.pinnedAt - rankB.pinnedAt;
+  }
+
+  if (a.businessRating !== b.businessRating) {
+    return b.businessRating - a.businessRating;
+  }
+
+  return rankA.fallbackId.localeCompare(rankB.fallbackId);
+};
+
 const removeFileIfExists = async (filePath) => {
   if (!filePath) return;
   try {
@@ -1409,7 +1442,11 @@ exports.getBusinessDetailsForUser = async (req, res) => {
     const [bookingReviews, appointmentReviews] = await Promise.all([
       BusinessOwnerBooking.find({
         businessOwnerId,
-        rating: { $ne: null }
+        rating: { $ne: null },
+        $or: [
+          { moderationStatus: { $exists: false } },
+          { moderationStatus: 'active' }
+        ]
       })
         .populate('userId', 'fullName profilePicture')
         .select('rating review reviewedAt createdAt userId')
@@ -1417,7 +1454,11 @@ exports.getBusinessDetailsForUser = async (req, res) => {
         .limit(20),
       BusinessOwnerAppointment.find({
         businessOwnerId,
-        rating: { $ne: null }
+        rating: { $ne: null },
+        $or: [
+          { moderationStatus: { $exists: false } },
+          { moderationStatus: 'active' }
+        ]
       })
         .populate('userId', 'fullName profilePicture')
         .select('rating review reviewedAt createdAt userId')
@@ -1542,7 +1583,11 @@ exports.getEmployeeProfileForUser = async (req, res) => {
     const [bookingReviews, appointmentReviews] = await Promise.all([
       BusinessOwnerBooking.find({
         employeeServiceId: { $in: serviceIds },
-        rating: { $ne: null }
+        rating: { $ne: null },
+        $or: [
+          { moderationStatus: { $exists: false } },
+          { moderationStatus: 'active' }
+        ]
       })
         .populate('userId', 'fullName profilePicture')
         .select('rating review reviewedAt createdAt userId')
@@ -1550,7 +1595,11 @@ exports.getEmployeeProfileForUser = async (req, res) => {
         .limit(20),
       BusinessOwnerAppointment.find({
         employeeServiceId: { $in: serviceIds },
-        rating: { $ne: null }
+        rating: { $ne: null },
+        $or: [
+          { moderationStatus: { $exists: false } },
+          { moderationStatus: 'active' }
+        ]
       })
         .populate('userId', 'fullName profilePicture')
         .select('rating review reviewedAt createdAt userId')
@@ -1610,7 +1659,7 @@ exports.getTopBusinesses = async (req, res) => {
 
     const businessOwners = await BusinessOwner.find()
       .populate('userId', 'isActive')
-      .select('businessName businessPhoto businessAddress businessProfile')
+      .select('businessName businessPhoto businessAddress businessProfile discoveryPin')
       .lean();
 
     const activeOwners = businessOwners.filter(owner => owner.userId?.isActive !== false);
@@ -1665,10 +1714,13 @@ exports.getTopBusinesses = async (req, res) => {
         businessAddress,
         employeeCount: employeeMap.get(owner._id.toString()) || 0,
         serviceCount: stats?.totalServices || 0,
-        appointmentServiceCount: stats?.appointmentServices || 0
+        appointmentServiceCount: stats?.appointmentServices || 0,
+        discoveryPin: owner.discoveryPin || null,
+        _id: owner._id
       };
     })
-      .sort((a, b) => b.businessRating - a.businessRating)
+      .sort(compareBusinessesByPinThenRating)
+      .map(({ discoveryPin, _id, ...business }) => business)
       .slice(0, limit);
 
     res.status(200).json({

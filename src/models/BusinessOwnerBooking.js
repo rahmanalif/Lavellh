@@ -158,6 +158,26 @@ const businessOwnerBookingSchema = new mongoose.Schema({
   },
   reviewedAt: {
     type: Date
+  },
+  moderationStatus: {
+    type: String,
+    enum: ['active', 'hidden_by_admin'],
+    default: 'active'
+  },
+  moderationReason: {
+    type: String,
+    trim: true,
+    maxlength: [500, 'Moderation reason cannot exceed 500 characters'],
+    default: null
+  },
+  moderatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Admin',
+    default: null
+  },
+  moderatedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
@@ -168,6 +188,7 @@ businessOwnerBookingSchema.index({ businessOwnerId: 1, createdAt: -1 });
 businessOwnerBookingSchema.index({ employeeServiceId: 1 });
 businessOwnerBookingSchema.index({ bookingStatus: 1 });
 businessOwnerBookingSchema.index({ bookingDate: 1 });
+businessOwnerBookingSchema.index({ moderationStatus: 1, reviewedAt: -1 });
 
 businessOwnerBookingSchema.pre('validate', function(next) {
   if (this.downPayment && this.totalAmount) {

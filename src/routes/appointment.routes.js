@@ -48,7 +48,7 @@ router.patch('/:id/reschedule', auth, bookingController.rescheduleAppointment);
 
 /**
  * @route   GET /api/appointments/:id/checkout-session
- * @desc    Get Stripe checkout session URL for appointment payment
+ * @desc    Get Stripe payment client secret for appointment payment
  * @access  Private (User)
  */
 router.get('/:id/checkout-session', auth, bookingController.getAppointmentCheckoutSession);

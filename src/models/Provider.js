@@ -114,6 +114,25 @@ const providerSchema = new mongoose.Schema({
     type: String, // e.g., "9:00 AM - 5:00 PM" or "24/7"
     trim: true,
     default: ''
+  },
+  discoveryPin: {
+    isPinned: {
+      type: Boolean,
+      default: false
+    },
+    pinOrder: {
+      type: Number,
+      default: null
+    },
+    pinnedAt: {
+      type: Date,
+      default: null
+    },
+    pinnedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Admin',
+      default: null
+    }
   }
 }, {
   timestamps: true
@@ -125,6 +144,7 @@ const providerSchema = new mongoose.Schema({
 providerSchema.index({ verificationStatus: 1 });
 providerSchema.index({ categories: 1 });
 providerSchema.index({ isPaidForHomeScreen: 1, paidHomeScreenExpiresAt: 1 });
+providerSchema.index({ 'discoveryPin.isPinned': 1, 'discoveryPin.pinOrder': 1 });
 
 // Virtual populate to get user details
 providerSchema.virtual('user', {

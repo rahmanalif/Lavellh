@@ -19,7 +19,7 @@ router.get('/my-appointments', auth, businessOwnerBookingController.getMyBusines
 
 /**
  * @route   GET /api/business-owner-appointments/:id/checkout-session
- * @desc    Get checkout session URL for appointment payment
+ * @desc    Get payment client secret for appointment payment
  * @access  Private (User)
  */
 router.get('/:id/checkout-session', auth, businessOwnerBookingController.getBusinessOwnerAppointmentCheckoutSession);

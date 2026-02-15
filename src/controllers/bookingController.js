@@ -8,7 +8,16 @@ const { getStripe } = require('../utility/stripe');
 
 const updateServiceRating = async (serviceId) => {
   const stats = await Review.aggregate([
-    { $match: { serviceId: serviceId, isActive: true } },
+    {
+      $match: {
+        serviceId: serviceId,
+        isActive: true,
+        $or: [
+          { moderationStatus: { $exists: false } },
+          { moderationStatus: 'active' }
+        ]
+      }
+    },
     {
       $group: {
         _id: '$serviceId',
@@ -806,7 +815,7 @@ exports.getDuePaymentIntent = async (req, res) => {
 };
 
 /**
- * @desc    Get appointment checkout session URL
+ * @desc    Get appointment payment client secret
  * @route   GET /api/appointments/:id/checkout-session
  * @access  Private (User)
  */
@@ -827,24 +836,28 @@ exports.getAppointmentCheckoutSession = async (req, res) => {
       });
     }
 
-    if (!appointment.checkoutSessionUrl) {
+    if (!appointment.paymentIntentId) {
       return res.status(404).json({
         success: false,
-        message: 'Checkout session not available yet'
+        message: 'Payment intent not available yet'
       });
     }
+
+    const stripe = getStripe();
+    const intent = await stripe.paymentIntents.retrieve(appointment.paymentIntentId);
 
     res.status(200).json({
       success: true,
       data: {
-        sessionUrl: appointment.checkoutSessionUrl
+        clientSecret: intent.client_secret,
+        status: intent.status
       }
     });
   } catch (error) {
     console.error('Get appointment checkout session error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching checkout session',
+      message: 'Error fetching payment intent',
       error: error.message
     });
   }
@@ -914,7 +927,7 @@ exports.confirmDuePayment = async (req, res) => {
 };
 
 /**
- * @desc    Get checkout session URL for down payment
+ * @desc    Get down payment client secret
  * @route   GET /api/bookings/:id/checkout-session
  * @access  Private (User)
  */
@@ -935,24 +948,28 @@ exports.getCheckoutSession = async (req, res) => {
       });
     }
 
-    if (!booking.checkoutSessionUrl) {
+    if (!booking.paymentIntentId) {
       return res.status(404).json({
         success: false,
-        message: 'Checkout session not available yet'
+        message: 'Payment intent not available yet'
       });
     }
+
+    const stripe = getStripe();
+    const intent = await stripe.paymentIntents.retrieve(booking.paymentIntentId);
 
     res.status(200).json({
       success: true,
       data: {
-        sessionUrl: booking.checkoutSessionUrl
+        clientSecret: intent.client_secret,
+        status: intent.status
       }
     });
   } catch (error) {
     console.error('Get checkout session error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching checkout session',
+      message: 'Error fetching payment intent',
       error: error.message
     });
   }

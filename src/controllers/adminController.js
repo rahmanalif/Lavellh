@@ -1,6 +1,7 @@
 const Admin = require('../models/Admin');
 const User = require('../models/User');
 const Provider = require('../models/Provider');
+const Review = require('../models/Review');
 const BusinessOwner = require('../models/BusinessOwner');
 const EventManager = require('../models/EventManager');
 const Settings = require('../models/Settings');
@@ -12,9 +13,13 @@ const Appointment = require('../models/Appointment');
 const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
 const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
 const AdminRefreshToken = require('../models/AdminRefreshToken');
+const Notification = require('../models/Notification');
+const DeviceToken = require('../models/DeviceToken');
 const { generateAccessToken, generateRefreshToken, getTokenExpiresIn, verifyRefreshToken } = require('../utility/jwt');
 const { deleteFromCloudinary } = require('../utility/cloudinary');
+const firebaseAdmin = require('../config/firebase');
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 
 // Simple HTML sanitizer function to prevent XSS
 // For production, consider using a library like 'sanitize-html' or 'DOMPurify'
@@ -32,6 +37,132 @@ const sanitizeHtml = (html) => {
   clean = clean.replace(/javascript\s*:/gi, '');
 
   return clean;
+};
+
+const MAX_DISCOVERY_PIN_ITEMS = 100;
+const BROADCAST_USER_TYPES = ['user', 'provider', 'businessOwner', 'eventManager'];
+const PUSH_BATCH_SIZE = 500;
+
+const parseOrderedIds = (orderedIds) => {
+  if (!Array.isArray(orderedIds)) {
+    return { error: 'orderedIds must be an array of ids.' };
+  }
+
+  if (orderedIds.length > MAX_DISCOVERY_PIN_ITEMS) {
+    return { error: `orderedIds cannot exceed ${MAX_DISCOVERY_PIN_ITEMS} items.` };
+  }
+
+  const normalizedIds = orderedIds.map((id) => String(id).trim()).filter(Boolean);
+  const uniqueIds = [...new Set(normalizedIds)];
+
+  if (uniqueIds.length !== normalizedIds.length) {
+    return { error: 'orderedIds must not contain duplicates.' };
+  }
+
+  const invalidIds = uniqueIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+  if (invalidIds.length > 0) {
+    return { error: 'orderedIds contains invalid ObjectId values.', invalidIds };
+  }
+
+  return {
+    ids: uniqueIds.map((id) => new mongoose.Types.ObjectId(id))
+  };
+};
+
+const chunkArray = (items, size) => {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
+
+const activeModerationFilter = {
+  $or: [
+    { moderationStatus: { $exists: false } },
+    { moderationStatus: 'active' }
+  ]
+};
+
+const recalculateProviderRating = async (providerId) => {
+  const stats = await Review.aggregate([
+    {
+      $match: {
+        providerId: new mongoose.Types.ObjectId(providerId),
+        isActive: true,
+        ...activeModerationFilter
+      }
+    },
+    {
+      $group: {
+        _id: '$providerId',
+        avgRating: { $avg: '$rating' },
+        totalReviews: { $sum: 1 }
+      }
+    }
+  ]);
+
+  if (stats.length === 0) {
+    await Provider.findByIdAndUpdate(providerId, { rating: 0, totalReviews: 0 });
+    return;
+  }
+
+  await Provider.findByIdAndUpdate(providerId, {
+    rating: Math.round(stats[0].avgRating * 10) / 10,
+    totalReviews: stats[0].totalReviews
+  });
+};
+
+const recalculateEmployeeServiceRating = async (employeeServiceId) => {
+  const [bookingStats, appointmentStats] = await Promise.all([
+    BusinessOwnerBooking.aggregate([
+      {
+        $match: {
+          employeeServiceId: new mongoose.Types.ObjectId(employeeServiceId),
+          rating: { $ne: null },
+          ...activeModerationFilter
+        }
+      },
+      {
+        $group: {
+          _id: '$employeeServiceId',
+          avgRating: { $avg: '$rating' },
+          totalReviews: { $sum: 1 }
+        }
+      }
+    ]),
+    BusinessOwnerAppointment.aggregate([
+      {
+        $match: {
+          employeeServiceId: new mongoose.Types.ObjectId(employeeServiceId),
+          rating: { $ne: null },
+          ...activeModerationFilter
+        }
+      },
+      {
+        $group: {
+          _id: '$employeeServiceId',
+          avgRating: { $avg: '$rating' },
+          totalReviews: { $sum: 1 }
+        }
+      }
+    ])
+  ]);
+
+  const bookingCount = bookingStats[0]?.totalReviews || 0;
+  const bookingAvg = bookingStats[0]?.avgRating || 0;
+  const appointmentCount = appointmentStats[0]?.totalReviews || 0;
+  const appointmentAvg = appointmentStats[0]?.avgRating || 0;
+  const totalReviews = bookingCount + appointmentCount;
+  const weightedAvg =
+    totalReviews > 0
+      ? ((bookingAvg * bookingCount) + (appointmentAvg * appointmentCount)) / totalReviews
+      : 0;
+
+  await EmployeeService.findByIdAndUpdate(employeeServiceId, {
+    rating: Math.round(weightedAvg * 10) / 10,
+    totalReviews
+  });
 };
 
 /**
@@ -1121,6 +1252,477 @@ exports.deleteProvider = async (req, res) => {
 };
 
 /**
+ * Get provider reviews for moderation
+ * GET /api/admin/reviews/providers
+ */
+exports.getProviderReviews = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      search,
+      moderationStatus,
+      minRating,
+      maxRating
+    } = req.query;
+
+    const query = {};
+    if (moderationStatus && ['active', 'hidden_by_admin'].includes(moderationStatus)) {
+      query.moderationStatus = moderationStatus;
+    }
+    if (minRating || maxRating) {
+      query.rating = {};
+      if (minRating) query.rating.$gte = Number(minRating);
+      if (maxRating) query.rating.$lte = Number(maxRating);
+    }
+
+    if (search) {
+      const users = await User.find({
+        fullName: { $regex: search, $options: 'i' }
+      }).select('_id');
+      const userIds = users.map((user) => user._id);
+      query.$or = [
+        { comment: { $regex: search, $options: 'i' } },
+        { userId: { $in: userIds } }
+      ];
+    }
+
+    const reviews = await Review.find(query)
+      .populate('userId', 'fullName profilePicture')
+      .populate({
+        path: 'providerId',
+        select: 'userId',
+        populate: { path: 'userId', select: 'fullName profilePicture' }
+      })
+      .sort({ createdAt: -1 })
+      .skip((parseInt(page, 10) - 1) * parseInt(limit, 10))
+      .limit(parseInt(limit, 10));
+
+    const total = await Review.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        reviews,
+        total,
+        currentPage: parseInt(page, 10),
+        totalPages: Math.ceil(total / parseInt(limit, 10))
+      }
+    });
+  } catch (error) {
+    console.error('Get provider reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching provider reviews',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Hide provider review
+ * PATCH /api/admin/reviews/providers/:id/hide
+ */
+exports.hideProviderReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Moderation reason is required.'
+      });
+    }
+
+    const review = await Review.findById(id);
+    if (!review) {
+      return res.status(404).json({
+        success: false,
+        message: 'Review not found'
+      });
+    }
+
+    review.moderationStatus = 'hidden_by_admin';
+    review.moderationReason = String(reason).trim();
+    review.moderatedBy = req.admin._id;
+    review.moderatedAt = new Date();
+    await review.save();
+
+    await recalculateProviderRating(review.providerId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Review hidden successfully',
+      data: { review }
+    });
+  } catch (error) {
+    console.error('Hide provider review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while hiding provider review',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Restore provider review
+ * PATCH /api/admin/reviews/providers/:id/restore
+ */
+exports.restoreProviderReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const review = await Review.findById(id);
+
+    if (!review) {
+      return res.status(404).json({
+        success: false,
+        message: 'Review not found'
+      });
+    }
+
+    review.moderationStatus = 'active';
+    review.moderationReason = null;
+    review.moderatedBy = null;
+    review.moderatedAt = null;
+    await review.save();
+
+    await recalculateProviderRating(review.providerId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Review restored successfully',
+      data: { review }
+    });
+  } catch (error) {
+    console.error('Restore provider review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while restoring provider review',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get business reviews for moderation (bookings + appointments)
+ * GET /api/admin/reviews/businesses
+ */
+exports.getBusinessReviews = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search, moderationStatus } = req.query;
+    const limitNum = parseInt(limit, 10);
+    const pageNum = parseInt(page, 10);
+    const skip = (pageNum - 1) * limitNum;
+
+    const baseMatch = { rating: { $ne: null } };
+    if (moderationStatus && ['active', 'hidden_by_admin'].includes(moderationStatus)) {
+      baseMatch.moderationStatus = moderationStatus;
+    }
+    if (search) {
+      baseMatch.review = { $regex: search, $options: 'i' };
+    }
+
+    const [bookings, appointments] = await Promise.all([
+      BusinessOwnerBooking.find(baseMatch)
+        .populate('userId', 'fullName profilePicture')
+        .populate('employeeServiceId', 'headline')
+        .sort({ reviewedAt: -1, createdAt: -1 })
+        .select('userId employeeServiceId businessOwnerId rating review reviewedAt createdAt moderationStatus moderationReason moderatedBy moderatedAt'),
+      BusinessOwnerAppointment.find(baseMatch)
+        .populate('userId', 'fullName profilePicture')
+        .populate('employeeServiceId', 'headline')
+        .sort({ reviewedAt: -1, createdAt: -1 })
+        .select('userId employeeServiceId businessOwnerId rating review reviewedAt createdAt moderationStatus moderationReason moderatedBy moderatedAt')
+    ]);
+
+    const merged = [
+      ...bookings.map((item) => ({
+        id: item._id,
+        sourceType: 'booking',
+        user: item.userId,
+        employeeService: item.employeeServiceId,
+        businessOwnerId: item.businessOwnerId,
+        rating: item.rating,
+        comment: item.review,
+        reviewedAt: item.reviewedAt || item.createdAt,
+        moderationStatus: item.moderationStatus || 'active',
+        moderationReason: item.moderationReason || null,
+        moderatedBy: item.moderatedBy || null,
+        moderatedAt: item.moderatedAt || null
+      })),
+      ...appointments.map((item) => ({
+        id: item._id,
+        sourceType: 'appointment',
+        user: item.userId,
+        employeeService: item.employeeServiceId,
+        businessOwnerId: item.businessOwnerId,
+        rating: item.rating,
+        comment: item.review,
+        reviewedAt: item.reviewedAt || item.createdAt,
+        moderationStatus: item.moderationStatus || 'active',
+        moderationReason: item.moderationReason || null,
+        moderatedBy: item.moderatedBy || null,
+        moderatedAt: item.moderatedAt || null
+      }))
+    ]
+      .sort((a, b) => new Date(b.reviewedAt) - new Date(a.reviewedAt));
+
+    const paged = merged.slice(skip, skip + limitNum);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        reviews: paged,
+        total: merged.length,
+        currentPage: pageNum,
+        totalPages: Math.ceil(merged.length / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Get business reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching business reviews',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Hide business review
+ * PATCH /api/admin/reviews/businesses/:sourceType/:id/hide
+ */
+exports.hideBusinessReview = async (req, res) => {
+  try {
+    const { sourceType, id } = req.params;
+    const { reason } = req.body;
+
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Moderation reason is required.'
+      });
+    }
+
+    const Model = sourceType === 'booking'
+      ? BusinessOwnerBooking
+      : sourceType === 'appointment'
+        ? BusinessOwnerAppointment
+        : null;
+
+    if (!Model) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid sourceType. Use booking or appointment.'
+      });
+    }
+
+    const reviewDoc = await Model.findById(id);
+    if (!reviewDoc || reviewDoc.rating == null) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business review not found'
+      });
+    }
+
+    reviewDoc.moderationStatus = 'hidden_by_admin';
+    reviewDoc.moderationReason = String(reason).trim();
+    reviewDoc.moderatedBy = req.admin._id;
+    reviewDoc.moderatedAt = new Date();
+    await reviewDoc.save();
+
+    if (reviewDoc.employeeServiceId) {
+      await recalculateEmployeeServiceRating(reviewDoc.employeeServiceId);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Business review hidden successfully'
+    });
+  } catch (error) {
+    console.error('Hide business review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while hiding business review',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Restore business review
+ * PATCH /api/admin/reviews/businesses/:sourceType/:id/restore
+ */
+exports.restoreBusinessReview = async (req, res) => {
+  try {
+    const { sourceType, id } = req.params;
+    const Model = sourceType === 'booking'
+      ? BusinessOwnerBooking
+      : sourceType === 'appointment'
+        ? BusinessOwnerAppointment
+        : null;
+
+    if (!Model) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid sourceType. Use booking or appointment.'
+      });
+    }
+
+    const reviewDoc = await Model.findById(id);
+    if (!reviewDoc || reviewDoc.rating == null) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business review not found'
+      });
+    }
+
+    reviewDoc.moderationStatus = 'active';
+    reviewDoc.moderationReason = null;
+    reviewDoc.moderatedBy = null;
+    reviewDoc.moderatedAt = null;
+    await reviewDoc.save();
+
+    if (reviewDoc.employeeServiceId) {
+      await recalculateEmployeeServiceRating(reviewDoc.employeeServiceId);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Business review restored successfully'
+    });
+  } catch (error) {
+    console.error('Restore business review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while restoring business review',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get provider discovery ranking (pinned first order)
+ * GET /api/admin/discovery/providers/ranking
+ */
+exports.getProviderDiscoveryRanking = async (req, res) => {
+  try {
+    const providers = await Provider.find({
+      'discoveryPin.isPinned': true
+    })
+      .populate('userId', 'fullName profilePicture isActive')
+      .sort({ 'discoveryPin.pinOrder': 1, 'discoveryPin.pinnedAt': 1, _id: 1 })
+      .select('userId verificationStatus isAvailable discoveryPin');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        providers: providers.map((provider) => ({
+          providerId: provider._id,
+          name: provider.userId?.fullName || null,
+          profileImage: provider.userId?.profilePicture || null,
+          isUserActive: provider.userId?.isActive !== false,
+          verificationStatus: provider.verificationStatus,
+          isAvailable: provider.isAvailable,
+          pinOrder: provider.discoveryPin?.pinOrder ?? null,
+          pinnedAt: provider.discoveryPin?.pinnedAt ?? null
+        })),
+        count: providers.length
+      }
+    });
+  } catch (error) {
+    console.error('Get provider discovery ranking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching provider discovery ranking',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Bulk update provider discovery ranking
+ * PUT /api/admin/discovery/providers/ranking
+ * Body: { orderedIds: string[] }
+ */
+exports.updateProviderDiscoveryRanking = async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    const parsed = parseOrderedIds(orderedIds);
+
+    if (parsed.error) {
+      return res.status(400).json({
+        success: false,
+        message: parsed.error,
+        invalidIds: parsed.invalidIds || []
+      });
+    }
+
+    const ids = parsed.ids;
+    const existingProviders = await Provider.find({ _id: { $in: ids } }).select('_id').lean();
+    const existingIdSet = new Set(existingProviders.map((provider) => String(provider._id)));
+    const missingIds = ids.map((id) => String(id)).filter((id) => !existingIdSet.has(id));
+
+    if (missingIds.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Some provider ids were not found.',
+        invalidIds: missingIds
+      });
+    }
+
+    await Provider.updateMany(
+      { 'discoveryPin.isPinned': true, _id: { $nin: ids } },
+      {
+        $set: {
+          'discoveryPin.isPinned': false,
+          'discoveryPin.pinOrder': null,
+          'discoveryPin.pinnedAt': null,
+          'discoveryPin.pinnedBy': null
+        }
+      }
+    );
+
+    if (ids.length > 0) {
+      const pinnedAt = new Date();
+      const bulkOps = ids.map((id, index) => ({
+        updateOne: {
+          filter: { _id: id },
+          update: {
+            $set: {
+              'discoveryPin.isPinned': true,
+              'discoveryPin.pinOrder': index + 1,
+              'discoveryPin.pinnedAt': pinnedAt,
+              'discoveryPin.pinnedBy': req.admin._id
+            }
+          }
+        }
+      }));
+
+      await Provider.bulkWrite(bulkOps);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Provider discovery ranking updated successfully',
+      data: {
+        orderedIds: ids.map((id) => String(id)),
+        count: ids.length
+      }
+    });
+  } catch (error) {
+    console.error('Update provider discovery ranking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating provider discovery ranking',
+      error: error.message
+    });
+  }
+};
+
+/**
  * Create New Admin (Super-admin only)
  * POST /api/admin/admins
  */
@@ -1845,6 +2447,124 @@ exports.deleteBusinessOwner = async (req, res) => {
   }
 };
 
+/**
+ * Get business discovery ranking (pinned first order)
+ * GET /api/admin/discovery/businesses/ranking
+ */
+exports.getBusinessDiscoveryRanking = async (req, res) => {
+  try {
+    const businesses = await BusinessOwner.find({
+      'discoveryPin.isPinned': true
+    })
+      .populate('userId', 'isActive')
+      .sort({ 'discoveryPin.pinOrder': 1, 'discoveryPin.pinnedAt': 1, _id: 1 })
+      .select('businessName businessPhoto businessAddress businessProfile discoveryPin userId');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        businesses: businesses.map((owner) => ({
+          businessOwnerId: owner._id,
+          businessName: owner.businessProfile?.name || owner.businessName || null,
+          businessPhoto: owner.businessProfile?.coverPhoto || owner.businessPhoto || null,
+          businessAddress: owner.businessProfile?.location || owner.businessAddress?.fullAddress || null,
+          isUserActive: owner.userId?.isActive !== false,
+          pinOrder: owner.discoveryPin?.pinOrder ?? null,
+          pinnedAt: owner.discoveryPin?.pinnedAt ?? null
+        })),
+        count: businesses.length
+      }
+    });
+  } catch (error) {
+    console.error('Get business discovery ranking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching business discovery ranking',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Bulk update business discovery ranking
+ * PUT /api/admin/discovery/businesses/ranking
+ * Body: { orderedIds: string[] }
+ */
+exports.updateBusinessDiscoveryRanking = async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    const parsed = parseOrderedIds(orderedIds);
+
+    if (parsed.error) {
+      return res.status(400).json({
+        success: false,
+        message: parsed.error,
+        invalidIds: parsed.invalidIds || []
+      });
+    }
+
+    const ids = parsed.ids;
+    const existingBusinesses = await BusinessOwner.find({ _id: { $in: ids } }).select('_id').lean();
+    const existingIdSet = new Set(existingBusinesses.map((business) => String(business._id)));
+    const missingIds = ids.map((id) => String(id)).filter((id) => !existingIdSet.has(id));
+
+    if (missingIds.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Some business owner ids were not found.',
+        invalidIds: missingIds
+      });
+    }
+
+    await BusinessOwner.updateMany(
+      { 'discoveryPin.isPinned': true, _id: { $nin: ids } },
+      {
+        $set: {
+          'discoveryPin.isPinned': false,
+          'discoveryPin.pinOrder': null,
+          'discoveryPin.pinnedAt': null,
+          'discoveryPin.pinnedBy': null
+        }
+      }
+    );
+
+    if (ids.length > 0) {
+      const pinnedAt = new Date();
+      const bulkOps = ids.map((id, index) => ({
+        updateOne: {
+          filter: { _id: id },
+          update: {
+            $set: {
+              'discoveryPin.isPinned': true,
+              'discoveryPin.pinOrder': index + 1,
+              'discoveryPin.pinnedAt': pinnedAt,
+              'discoveryPin.pinnedBy': req.admin._id
+            }
+          }
+        }
+      }));
+
+      await BusinessOwner.bulkWrite(bulkOps);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Business discovery ranking updated successfully',
+      data: {
+        orderedIds: ids.map((id) => String(id)),
+        count: ids.length
+      }
+    });
+  } catch (error) {
+    console.error('Update business discovery ranking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating business discovery ranking',
+      error: error.message
+    });
+  }
+};
+
 // ============ EVENT MANAGER MANAGEMENT ============
 
 /**
@@ -2184,6 +2904,154 @@ exports.getAllSettings = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while fetching settings',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Broadcast notification from admin to platform users
+ * POST /api/admin/notifications/broadcast
+ */
+exports.broadcastNotification = async (req, res) => {
+  try {
+    const {
+      title,
+      body,
+      userTypes = BROADCAST_USER_TYPES,
+      includeInactive = false,
+      sendPush = true
+    } = req.body;
+
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title is required.'
+      });
+    }
+
+    if (!body || !String(body).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Body is required.'
+      });
+    }
+
+    if (!Array.isArray(userTypes) || userTypes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'userTypes must be a non-empty array.'
+      });
+    }
+
+    const normalizedUserTypes = [...new Set(userTypes.map((u) => String(u).trim()))];
+    const invalidUserTypes = normalizedUserTypes.filter((u) => !BROADCAST_USER_TYPES.includes(u));
+    if (invalidUserTypes.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid userTypes provided.',
+        invalidUserTypes
+      });
+    }
+
+    const userQuery = { userType: { $in: normalizedUserTypes } };
+    if (!includeInactive) {
+      userQuery.isActive = true;
+    }
+
+    const users = await User.find(userQuery).select('_id userType').lean();
+    if (users.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No target users found for broadcast.',
+        data: {
+          targetedUsers: 0,
+          notificationsCreated: 0,
+          push: {
+            attempted: false,
+            sent: 0,
+            failed: 0,
+            tokens: 0
+          }
+        }
+      });
+    }
+
+    const now = new Date();
+    const notificationDocs = users.map((user) => ({
+      userId: user._id,
+      userType: user.userType,
+      title: String(title).trim(),
+      body: String(body).trim(),
+      type: 'admin_broadcast',
+      metadata: {
+        source: 'admin',
+        adminId: req.admin?._id || null,
+        sentAt: now
+      },
+      createdAt: now,
+      updatedAt: now
+    }));
+
+    await Notification.insertMany(notificationDocs, { ordered: false });
+
+    let pushSent = 0;
+    let pushFailed = 0;
+    let tokenCount = 0;
+    const pushEnabled =
+      sendPush === true &&
+      firebaseAdmin &&
+      firebaseAdmin.apps &&
+      firebaseAdmin.apps.length > 0;
+
+    if (pushEnabled) {
+      const userIds = users.map((u) => u._id);
+      const deviceTokens = await DeviceToken.find({
+        userId: { $in: userIds },
+        isActive: true
+      }).select('token');
+
+      const tokens = [...new Set(deviceTokens.map((t) => t.token).filter(Boolean))];
+      tokenCount = tokens.length;
+
+      const tokenBatches = chunkArray(tokens, PUSH_BATCH_SIZE);
+      for (const batch of tokenBatches) {
+        const response = await firebaseAdmin.messaging().sendEachForMulticast({
+          tokens: batch,
+          notification: {
+            title: String(title).trim(),
+            body: String(body).trim()
+          },
+          data: {
+            type: 'admin_broadcast'
+          }
+        });
+
+        pushSent += response.successCount;
+        pushFailed += response.failureCount;
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Broadcast notification sent successfully.',
+      data: {
+        targetedUsers: users.length,
+        notificationsCreated: notificationDocs.length,
+        userTypes: normalizedUserTypes,
+        push: {
+          attempted: pushEnabled,
+          sent: pushSent,
+          failed: pushFailed,
+          tokens: tokenCount
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Broadcast notification error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'An error occurred while broadcasting notification',
       error: error.message
     });
   }

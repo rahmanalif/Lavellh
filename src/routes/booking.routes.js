@@ -69,7 +69,7 @@ router.post('/:id/due/confirm', auth, bookingController.confirmDuePayment);
 
 /**
  * @route   GET /api/bookings/:id/checkout-session
- * @desc    Get Stripe checkout session URL for down payment
+ * @desc    Get Stripe payment client secret for down payment
  * @access  Private (User)
  */
 router.get('/:id/checkout-session', auth, bookingController.getCheckoutSession);

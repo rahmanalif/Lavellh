@@ -49,6 +49,27 @@ const reviewSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+  moderationStatus: {
+    type: String,
+    enum: ['active', 'hidden_by_admin'],
+    default: 'active',
+    index: true
+  },
+  moderationReason: {
+    type: String,
+    trim: true,
+    maxlength: 500,
+    default: null
+  },
+  moderatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Admin',
+    default: null
+  },
+  moderatedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
@@ -59,6 +80,7 @@ reviewSchema.index({ providerId: 1, createdAt: -1 });
 reviewSchema.index({ userId: 1 });
 reviewSchema.index({ serviceId: 1 });
 reviewSchema.index({ rating: 1 });
+reviewSchema.index({ moderationStatus: 1, createdAt: -1 });
 
 // Prevent duplicate reviews from same user for same booking
 reviewSchema.index({ userId: 1, bookingId: 1 }, {
@@ -106,7 +128,13 @@ reviewSchema.post('save', async function() {
 
     // Calculate average rating for this provider
     const stats = await Review.aggregate([
-      { $match: { providerId: this.providerId, isActive: true } },
+      {
+        $match: {
+          providerId: this.providerId,
+          isActive: true,
+          moderationStatus: 'active'
+        }
+      },
       {
         $group: {
           _id: '$providerId',
@@ -136,7 +164,13 @@ reviewSchema.post('findOneAndDelete', async function(doc) {
 
       // Recalculate average rating
       const stats = await Review.aggregate([
-        { $match: { providerId: doc.providerId, isActive: true } },
+        {
+          $match: {
+            providerId: doc.providerId,
+            isActive: true,
+            moderationStatus: 'active'
+          }
+        },
         {
           $group: {
             _id: '$providerId',

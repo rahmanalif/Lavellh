@@ -45,7 +45,16 @@ const notifyBusinessOwner = async ({
 const updateEmployeeServiceRating = async (employeeServiceId) => {
   const [bookingStats, appointmentStats] = await Promise.all([
     BusinessOwnerBooking.aggregate([
-      { $match: { employeeServiceId: employeeServiceId, rating: { $ne: null } } },
+      {
+        $match: {
+          employeeServiceId: employeeServiceId,
+          rating: { $ne: null },
+          $or: [
+            { moderationStatus: { $exists: false } },
+            { moderationStatus: 'active' }
+          ]
+        }
+      },
       {
         $group: {
           _id: '$employeeServiceId',
@@ -55,7 +64,16 @@ const updateEmployeeServiceRating = async (employeeServiceId) => {
       }
     ]),
     BusinessOwnerAppointment.aggregate([
-      { $match: { employeeServiceId: employeeServiceId, rating: { $ne: null } } },
+      {
+        $match: {
+          employeeServiceId: employeeServiceId,
+          rating: { $ne: null },
+          $or: [
+            { moderationStatus: { $exists: false } },
+            { moderationStatus: 'active' }
+          ]
+        }
+      },
       {
         $group: {
           _id: '$employeeServiceId',
@@ -1054,35 +1072,12 @@ exports.acceptBusinessOwnerBooking = async (req, res) => {
     }
     await booking.save();
 
-    let sessionUrl = null;
+    let clientSecret = null;
     try {
-      const successUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL;
-      const cancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL;
-      if (!successUrl || !cancelUrl) {
-        return res.status(500).json({
-          success: false,
-          message: 'Stripe checkout URLs not configured'
-        });
-      }
-
       const stripe = getStripe();
-      const session = await stripe.checkout.sessions.create({
-        mode: 'payment',
-        payment_method_types: ['card'],
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'usd',
-              unit_amount: Math.round(booking.downPayment * 100),
-              product_data: {
-                name: booking.serviceSnapshot?.serviceName || 'Service booking down payment'
-              }
-            }
-          }
-        ],
-        success_url: successUrl,
-        cancel_url: cancelUrl,
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(booking.downPayment * 100),
+        currency: 'usd',
         metadata: {
           businessOwnerBookingId: booking._id.toString(),
           userId: booking.userId.toString(),
@@ -1091,18 +1086,16 @@ exports.acceptBusinessOwnerBooking = async (req, res) => {
         }
       });
 
-      booking.paymentIntentId = session.payment_intent || booking.paymentIntentId;
-      booking.paymentIntentStatus = 'requires_payment_method';
-      booking.checkoutSessionId = session.id;
-      booking.checkoutSessionUrl = session.url;
+      booking.paymentIntentId = paymentIntent.id;
+      booking.paymentIntentStatus = paymentIntent.status;
       await booking.save();
 
-      sessionUrl = session.url;
+      clientSecret = paymentIntent.client_secret;
     } catch (stripeError) {
       console.error('Stripe checkout session error:', stripeError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to create checkout session',
+        message: 'Failed to create payment intent',
         error: stripeError.message
       });
     }
@@ -1114,28 +1107,22 @@ exports.acceptBusinessOwnerBooking = async (req, res) => {
       message: 'Booking accepted successfully',
       data: {
         booking,
-        checkout: {
-          sessionUrl
-        }
+        checkout: { clientSecret }
       }
     });
 
-    if (sessionUrl) {
-      await createAndSend({
-        userId: booking.userId,
-        userType: 'user',
-        title: 'Booking accepted',
-        body: 'Your booking was accepted. Please complete the down payment.',
-        type: 'business_owner_booking_payment',
-        entityType: 'businessOwnerBooking',
-        entityId: booking._id,
-        metadata: { sessionUrl },
-        data: {
-          bookingId: booking._id.toString(),
-          sessionUrl
-        }
-      });
-    }
+    await createAndSend({
+      userId: booking.userId,
+      userType: 'user',
+      title: 'Booking accepted',
+      body: 'Your booking was accepted. Please complete the down payment.',
+      type: 'business_owner_booking_payment',
+      entityType: 'businessOwnerBooking',
+      entityId: booking._id,
+      data: {
+        bookingId: booking._id.toString()
+      }
+    });
   } catch (error) {
     console.error('Accept business owner booking error:', error);
     res.status(500).json({
@@ -1429,35 +1416,12 @@ exports.acceptBusinessOwnerAppointment = async (req, res) => {
     }
     await appointment.save();
 
-    let sessionUrl = null;
+    let clientSecret = null;
     try {
-      const successUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL;
-      const cancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL;
-      if (!successUrl || !cancelUrl) {
-        return res.status(500).json({
-          success: false,
-          message: 'Stripe checkout URLs not configured'
-        });
-      }
-
       const stripe = getStripe();
-      const session = await stripe.checkout.sessions.create({
-        mode: 'payment',
-        payment_method_types: ['card'],
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'usd',
-              unit_amount: Math.round(appointment.totalAmount * 100),
-              product_data: {
-                name: appointment.serviceSnapshot?.serviceName || 'Appointment payment'
-              }
-            }
-          }
-        ],
-        success_url: successUrl,
-        cancel_url: cancelUrl,
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(appointment.totalAmount * 100),
+        currency: 'usd',
         metadata: {
           businessOwnerAppointmentId: appointment._id.toString(),
           userId: appointment.userId.toString(),
@@ -1466,18 +1430,16 @@ exports.acceptBusinessOwnerAppointment = async (req, res) => {
         }
       });
 
-      appointment.paymentIntentId = session.payment_intent || appointment.paymentIntentId;
-      appointment.paymentIntentStatus = 'requires_payment_method';
-      appointment.checkoutSessionId = session.id;
-      appointment.checkoutSessionUrl = session.url;
+      appointment.paymentIntentId = paymentIntent.id;
+      appointment.paymentIntentStatus = paymentIntent.status;
       await appointment.save();
 
-      sessionUrl = session.url;
+      clientSecret = paymentIntent.client_secret;
     } catch (stripeError) {
       console.error('Stripe checkout session error:', stripeError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to create checkout session',
+        message: 'Failed to create payment intent',
         error: stripeError.message
       });
     }
@@ -1489,28 +1451,22 @@ exports.acceptBusinessOwnerAppointment = async (req, res) => {
       message: 'Appointment accepted successfully',
       data: {
         appointment,
-        checkout: {
-          sessionUrl
-        }
+        checkout: { clientSecret }
       }
     });
 
-    if (sessionUrl) {
-      await createAndSend({
-        userId: appointment.userId,
-        userType: 'user',
-        title: 'Appointment accepted',
-        body: 'Your appointment was accepted. Please complete payment.',
-        type: 'business_owner_appointment_payment',
-        entityType: 'businessOwnerAppointment',
-        entityId: appointment._id,
-        metadata: { sessionUrl },
-        data: {
-          appointmentId: appointment._id.toString(),
-          sessionUrl
-        }
-      });
-    }
+    await createAndSend({
+      userId: appointment.userId,
+      userType: 'user',
+      title: 'Appointment accepted',
+      body: 'Your appointment was accepted. Please complete payment.',
+      type: 'business_owner_appointment_payment',
+      entityType: 'businessOwnerAppointment',
+      entityId: appointment._id,
+      data: {
+        appointmentId: appointment._id.toString()
+      }
+    });
   } catch (error) {
     console.error('Accept business owner appointment error:', error);
     res.status(500).json({
@@ -1808,7 +1764,7 @@ exports.markBusinessOwnerNoShow = async (req, res) => {
 };
 
 /**
- * @desc    Get checkout session URL for business owner booking down payment (user)
+ * @desc    Get business owner booking down payment client secret (user)
  * @route   GET /api/business-owner-bookings/:id/checkout-session
  * @access  Private (User)
  */
@@ -1829,31 +1785,35 @@ exports.getBusinessOwnerBookingCheckoutSession = async (req, res) => {
       });
     }
 
-    if (!booking.checkoutSessionUrl) {
+    if (!booking.paymentIntentId) {
       return res.status(404).json({
         success: false,
-        message: 'Checkout session not available yet'
+        message: 'Payment intent not available yet'
       });
     }
+
+    const stripe = getStripe();
+    const intent = await stripe.paymentIntents.retrieve(booking.paymentIntentId);
 
     res.status(200).json({
       success: true,
       data: {
-        sessionUrl: booking.checkoutSessionUrl
+        clientSecret: intent.client_secret,
+        status: intent.status
       }
     });
   } catch (error) {
     console.error('Get business owner booking checkout session error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching checkout session',
+      message: 'Error fetching payment intent',
       error: error.message
     });
   }
 };
 
 /**
- * @desc    Get checkout session URL for business owner appointment payment (user)
+ * @desc    Get business owner appointment payment client secret (user)
  * @route   GET /api/business-owner-appointments/:id/checkout-session
  * @access  Private (User)
  */
@@ -1874,24 +1834,28 @@ exports.getBusinessOwnerAppointmentCheckoutSession = async (req, res) => {
       });
     }
 
-    if (!appointment.checkoutSessionUrl) {
+    if (!appointment.paymentIntentId) {
       return res.status(404).json({
         success: false,
-        message: 'Checkout session not available yet'
+        message: 'Payment intent not available yet'
       });
     }
+
+    const stripe = getStripe();
+    const intent = await stripe.paymentIntents.retrieve(appointment.paymentIntentId);
 
     res.status(200).json({
       success: true,
       data: {
-        sessionUrl: appointment.checkoutSessionUrl
+        clientSecret: intent.client_secret,
+        status: intent.status
       }
     });
   } catch (error) {
     console.error('Get business owner appointment checkout session error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching checkout session',
+      message: 'Error fetching payment intent',
       error: error.message
     });
   }
