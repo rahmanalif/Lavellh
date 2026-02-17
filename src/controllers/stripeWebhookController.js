@@ -4,6 +4,41 @@ const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
 const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
 const EventTicketPurchase = require('../models/EventTicketPurchase');
 const Event = require('../models/Event');
+const PaymentRefundLog = require('../models/PaymentRefundLog');
+
+const normalizeRefundStatus = (status) => {
+  const allowed = ['requested', 'pending', 'succeeded', 'failed', 'canceled', 'requires_action'];
+  if (allowed.includes(status)) return status;
+  return 'pending';
+};
+
+const syncRefundLogFromStripe = async (refund) => {
+  if (!refund?.id) return;
+
+  let refundLog = await PaymentRefundLog.findOne({ refundId: refund.id });
+
+  // Fallback: if refundId was not set yet, attach this Stripe refund to the newest pending/requested log for the same payment intent.
+  if (!refundLog && refund.payment_intent) {
+    refundLog = await PaymentRefundLog.findOne({
+      paymentIntentId: refund.payment_intent,
+      refundId: null,
+      status: { $in: ['requested', 'pending', 'requires_action'] }
+    }).sort({ createdAt: -1 });
+  }
+
+  if (!refundLog) return;
+
+  refundLog.refundId = refund.id;
+  refundLog.status = normalizeRefundStatus(refund.status);
+  refundLog.stripeError = refund.failure_reason || null;
+  refundLog.metadata = {
+    ...(refundLog.metadata || {}),
+    stripeRefundStatus: refund.status || null,
+    chargeId: refund.charge || null,
+    receiptNumber: refund.receipt_number || null
+  };
+  await refundLog.save();
+};
 
 const handleStripeWebhook = async (req, res) => {
   let event;
@@ -310,6 +345,10 @@ const handleStripeWebhook = async (req, res) => {
           ticketPurchase.paymentStatus = 'failed';
           await ticketPurchase.save();
         }
+        break;
+      }
+      case 'refund.updated': {
+        await syncRefundLogFromStripe(data);
         break;
       }
       default:

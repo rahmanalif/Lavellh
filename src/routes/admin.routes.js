@@ -45,6 +45,30 @@ router.get(
   adminController.getTransactions
 );
 
+/**
+ * @route   POST /api/admin/transactions/refund
+ * @desc    Refund a transaction by Stripe paymentIntentId (full or partial)
+ * @access  Private (Admin with canViewReports permission)
+ */
+router.post(
+  '/transactions/refund',
+  verifyAdminToken,
+  requirePermission('canViewReports'),
+  adminController.refundTransaction
+);
+
+/**
+ * @route   GET /api/admin/transactions/refunds
+ * @desc    Get refund audit logs
+ * @access  Private (Admin with canViewReports permission)
+ */
+router.get(
+  '/transactions/refunds',
+  verifyAdminToken,
+  requirePermission('canViewReports'),
+  adminController.getRefundLogs
+);
+
 // ============ PROVIDER MANAGEMENT ============
 
 /**

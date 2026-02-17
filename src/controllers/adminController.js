@@ -8,15 +8,18 @@ const Settings = require('../models/Settings');
 const Employee = require('../models/Employee');
 const EmployeeService = require('../models/EmployeeService');
 const Event = require('../models/Event');
+const EventTicketPurchase = require('../models/EventTicketPurchase');
 const Booking = require('../models/Booking');
 const Appointment = require('../models/Appointment');
 const BusinessOwnerBooking = require('../models/BusinessOwnerBooking');
 const BusinessOwnerAppointment = require('../models/BusinessOwnerAppointment');
+const PaymentRefundLog = require('../models/PaymentRefundLog');
 const AdminRefreshToken = require('../models/AdminRefreshToken');
 const Notification = require('../models/Notification');
 const DeviceToken = require('../models/DeviceToken');
 const { generateAccessToken, generateRefreshToken, getTokenExpiresIn, verifyRefreshToken } = require('../utility/jwt');
 const { deleteFromCloudinary } = require('../utility/cloudinary');
+const { getStripe } = require('../utility/stripe');
 const firebaseAdmin = require('../config/firebase');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
@@ -42,6 +45,157 @@ const sanitizeHtml = (html) => {
 const MAX_DISCOVERY_PIN_ITEMS = 100;
 const BROADCAST_USER_TYPES = ['user', 'provider', 'businessOwner', 'eventManager'];
 const PUSH_BATCH_SIZE = 500;
+const STRIPE_REFUND_REASONS = ['duplicate', 'fraudulent', 'requested_by_customer'];
+
+const REFUND_SOURCE_LOOKUP = [
+  { model: Booking, sourceModel: 'Booking', sourcePaymentField: 'paymentIntentId' },
+  { model: Booking, sourceModel: 'Booking', sourcePaymentField: 'duePaymentIntentId' },
+  { model: BusinessOwnerBooking, sourceModel: 'BusinessOwnerBooking', sourcePaymentField: 'paymentIntentId' },
+  { model: BusinessOwnerBooking, sourceModel: 'BusinessOwnerBooking', sourcePaymentField: 'duePaymentIntentId' },
+  { model: Appointment, sourceModel: 'Appointment', sourcePaymentField: 'paymentIntentId' },
+  { model: BusinessOwnerAppointment, sourceModel: 'BusinessOwnerAppointment', sourcePaymentField: 'paymentIntentId' },
+  { model: EventTicketPurchase, sourceModel: 'EventTicketPurchase', sourcePaymentField: 'paymentIntentId' }
+];
+
+const CHECKOUT_SESSION_SOURCE_LOOKUP = [
+  { model: Booking, sourceModel: 'Booking' },
+  { model: BusinessOwnerBooking, sourceModel: 'BusinessOwnerBooking' },
+  { model: Appointment, sourceModel: 'Appointment' },
+  { model: BusinessOwnerAppointment, sourceModel: 'BusinessOwnerAppointment' },
+  { model: EventTicketPurchase, sourceModel: 'EventTicketPurchase' }
+];
+
+const findRefundSourceByPaymentIntent = async (paymentIntentId) => {
+  for (const entry of REFUND_SOURCE_LOOKUP) {
+    const doc = await entry.model.findOne({ [entry.sourcePaymentField]: paymentIntentId }).select('_id paymentStatus');
+    if (doc) {
+      return {
+        doc,
+        sourceModel: entry.sourceModel,
+        sourcePaymentField: entry.sourcePaymentField
+      };
+    }
+  }
+  return null;
+};
+
+const findSourceByCheckoutSessionId = async (checkoutSessionId) => {
+  for (const entry of CHECKOUT_SESSION_SOURCE_LOOKUP) {
+    const doc = await entry.model
+      .findOne({ checkoutSessionId })
+      .select('_id paymentStatus paymentIntentId checkoutSessionId');
+
+    if (doc) {
+      return {
+        doc,
+        model: entry.model,
+        sourceModel: entry.sourceModel,
+        sourcePaymentField: 'paymentIntentId'
+      };
+    }
+  }
+  return null;
+};
+
+const resolveRefundTarget = async ({ transactionReference, stripe }) => {
+  const normalizedReference = String(transactionReference || '').trim();
+
+  if (normalizedReference.startsWith('pi_')) {
+    const source = await findRefundSourceByPaymentIntent(normalizedReference);
+    return {
+      paymentIntentId: normalizedReference,
+      source,
+      inputType: 'payment_intent'
+    };
+  }
+
+  if (normalizedReference.startsWith('cs_')) {
+    const checkoutSource = await findSourceByCheckoutSessionId(normalizedReference);
+    let resolvedPaymentIntentId = checkoutSource?.doc?.paymentIntentId || null;
+
+    if (!resolvedPaymentIntentId) {
+      const checkoutSession = await stripe.checkout.sessions.retrieve(normalizedReference);
+      if (typeof checkoutSession?.payment_intent === 'string' && checkoutSession.payment_intent.startsWith('pi_')) {
+        resolvedPaymentIntentId = checkoutSession.payment_intent;
+      }
+    }
+
+    if (!resolvedPaymentIntentId) {
+      return {
+        paymentIntentId: null,
+        source: checkoutSource,
+        inputType: 'checkout_session'
+      };
+    }
+
+    if (checkoutSource && !checkoutSource.doc.paymentIntentId) {
+      await checkoutSource.model.updateOne(
+        { _id: checkoutSource.doc._id },
+        { $set: { paymentIntentId: resolvedPaymentIntentId } }
+      );
+      checkoutSource.doc.paymentIntentId = resolvedPaymentIntentId;
+    }
+
+    return {
+      paymentIntentId: resolvedPaymentIntentId,
+      source: checkoutSource || await findRefundSourceByPaymentIntent(resolvedPaymentIntentId),
+      inputType: 'checkout_session'
+    };
+  }
+
+  return {
+    paymentIntentId: null,
+    source: null,
+    inputType: 'unknown'
+  };
+};
+
+const markTransactionAsRefunded = async ({ sourceModel, sourceId }) => {
+  const update = { paymentStatus: 'refunded' };
+
+  switch (sourceModel) {
+    case 'Booking': {
+      const booking = await Booking.findById(sourceId).select('duePaymentIntentId');
+      if (booking?.duePaymentIntentId) return false;
+      await Booking.updateOne({ _id: sourceId }, { $set: update });
+      return true;
+    }
+    case 'BusinessOwnerBooking': {
+      const booking = await BusinessOwnerBooking.findById(sourceId).select('duePaymentIntentId');
+      if (booking?.duePaymentIntentId) return false;
+      await BusinessOwnerBooking.updateOne({ _id: sourceId }, { $set: update });
+      return true;
+    }
+    case 'Appointment':
+      await Appointment.updateOne({ _id: sourceId }, { $set: update });
+      return true;
+    case 'BusinessOwnerAppointment':
+      await BusinessOwnerAppointment.updateOne({ _id: sourceId }, { $set: update });
+      return true;
+    case 'EventTicketPurchase':
+      await EventTicketPurchase.updateOne({ _id: sourceId }, { $set: update });
+      return true;
+    default:
+      return false;
+  }
+};
+
+const buildRefundIdempotencyKey = ({ explicitKey, adminId, paymentIntentId, amountCents, reason, note }) => {
+  if (explicitKey && String(explicitKey).trim()) {
+    return String(explicitKey).trim();
+  }
+
+  return crypto
+    .createHash('sha256')
+    .update([
+      String(adminId),
+      paymentIntentId,
+      String(amountCents),
+      reason || '',
+      note || ''
+    ].join('|'))
+    .digest('hex');
+};
 
 const parseOrderedIds = (orderedIds) => {
   if (!Array.isArray(orderedIds)) {
@@ -797,6 +951,9 @@ exports.getTransactions = async (req, res) => {
           source: 'user_provider_booking',
           orderId: b._id,
           transactionId: b.paymentIntentId || b.duePaymentIntentId || b.checkoutSessionId || null,
+          paymentIntentId: b.paymentIntentId || null,
+          duePaymentIntentId: b.duePaymentIntentId || null,
+          checkoutSessionId: b.checkoutSessionId || null,
           userName,
           providerName,
           paymentStatus: b.paymentStatus,
@@ -823,6 +980,9 @@ exports.getTransactions = async (req, res) => {
           source: 'user_provider_appointment',
           orderId: a._id,
           transactionId: a.paymentIntentId || a.checkoutSessionId || null,
+          paymentIntentId: a.paymentIntentId || null,
+          duePaymentIntentId: null,
+          checkoutSessionId: a.checkoutSessionId || null,
           userName,
           providerName,
           paymentStatus: a.paymentStatus,
@@ -869,6 +1029,9 @@ exports.getTransactions = async (req, res) => {
           source: 'user_business_owner_booking',
           orderId: b._id,
           transactionId: b.paymentIntentId || b.duePaymentIntentId || b.checkoutSessionId || null,
+          paymentIntentId: b.paymentIntentId || null,
+          duePaymentIntentId: b.duePaymentIntentId || null,
+          checkoutSessionId: b.checkoutSessionId || null,
           userName,
           businessOwnerName,
           paymentStatus: b.paymentStatus,
@@ -895,6 +1058,9 @@ exports.getTransactions = async (req, res) => {
           source: 'user_business_owner_appointment',
           orderId: a._id,
           transactionId: a.paymentIntentId || a.checkoutSessionId || null,
+          paymentIntentId: a.paymentIntentId || null,
+          duePaymentIntentId: null,
+          checkoutSessionId: a.checkoutSessionId || null,
           userName,
           businessOwnerName,
           paymentStatus: a.paymentStatus,
@@ -933,6 +1099,9 @@ exports.getTransactions = async (req, res) => {
           source: 'user_event_manager_ticket',
           orderId: t._id,
           transactionId: t.paymentIntentId || t.checkoutSessionId || null,
+          paymentIntentId: t.paymentIntentId || null,
+          duePaymentIntentId: null,
+          checkoutSessionId: t.checkoutSessionId || null,
           userName,
           eventManagerName,
           paymentStatus: t.paymentStatus,
@@ -989,6 +1158,387 @@ exports.getTransactions = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while fetching transactions',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Refund Transaction (Admin)
+ * POST /api/admin/transactions/refund
+ * @body paymentIntentId, amount (optional), reason (optional), note (optional), idempotencyKey (optional)
+ */
+exports.refundTransaction = async (req, res) => {
+  let refundLog = null;
+
+  try {
+    const {
+      paymentIntentId,
+      transactionId,
+      checkoutSessionId,
+      amount,
+      reason,
+      note,
+      idempotencyKey
+    } = req.body;
+
+    const transactionReference = paymentIntentId || transactionId || checkoutSessionId;
+
+    if (!transactionReference || typeof transactionReference !== 'string') {
+      return res.status(400).json({
+        success: false,
+        message: 'paymentIntentId, transactionId, or checkoutSessionId is required'
+      });
+    }
+
+    const normalizedReference = transactionReference.trim();
+    if (!normalizedReference.startsWith('pi_') && !normalizedReference.startsWith('cs_')) {
+      return res.status(400).json({
+        success: false,
+        message: 'transaction reference must start with pi_ or cs_'
+      });
+    }
+
+    const normalizedReason = reason ? String(reason).trim() : null;
+    const normalizedNote = note ? String(note).trim() : null;
+
+    if (normalizedNote && normalizedNote.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        message: 'note cannot exceed 1000 characters'
+      });
+    }
+
+    let requestedAmountCents = null;
+    if (amount !== undefined && amount !== null && amount !== '') {
+      const parsedAmount = Number(amount);
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'amount must be a positive number'
+        });
+      }
+      requestedAmountCents = Math.round(parsedAmount * 100);
+      if (requestedAmountCents <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'amount is too small'
+        });
+      }
+    }
+
+    const stripe = getStripe();
+    let resolvedTarget = null;
+    try {
+      resolvedTarget = await resolveRefundTarget({
+        transactionReference: normalizedReference,
+        stripe
+      });
+    } catch (resolveError) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid checkout session or unable to resolve payment intent',
+        error: resolveError.message
+      });
+    }
+
+    const normalizedPaymentIntentId = resolvedTarget.paymentIntentId;
+    const source = resolvedTarget.source;
+
+    if (!normalizedPaymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Could not resolve a payment intent from the provided transaction reference'
+      });
+    }
+
+    if (!source) {
+      return res.status(404).json({
+        success: false,
+        message: 'No local transaction found for the resolved payment intent'
+      });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.retrieve(normalizedPaymentIntentId);
+
+    if (!paymentIntent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Stripe payment intent not found'
+      });
+    }
+
+    if (paymentIntent.status !== 'succeeded') {
+      return res.status(400).json({
+        success: false,
+        message: `Payment intent is not refundable in current status: ${paymentIntent.status}`
+      });
+    }
+
+    const refunds = await stripe.refunds.list({
+      payment_intent: normalizedPaymentIntentId,
+      limit: 100
+    });
+
+    const alreadyRefundedCents = refunds.data
+      .filter((item) => !['failed', 'canceled'].includes(item.status))
+      .reduce((sum, item) => sum + (item.amount || 0), 0);
+
+    const capturedAmountCents = paymentIntent.amount_received || paymentIntent.amount || 0;
+    const remainingRefundableCents = Math.max(capturedAmountCents - alreadyRefundedCents, 0);
+
+    if (remainingRefundableCents <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'This payment is already fully refunded'
+      });
+    }
+
+    const finalRefundAmountCents = requestedAmountCents || remainingRefundableCents;
+    if (finalRefundAmountCents > remainingRefundableCents) {
+      return res.status(400).json({
+        success: false,
+        message: `Requested amount exceeds remaining refundable amount (${(remainingRefundableCents / 100).toFixed(2)})`
+      });
+    }
+
+    const resolvedIdempotencyKey = buildRefundIdempotencyKey({
+      explicitKey: idempotencyKey,
+      adminId: req.admin._id,
+      paymentIntentId: normalizedPaymentIntentId,
+      amountCents: finalRefundAmountCents,
+      reason: normalizedReason,
+      note: normalizedNote
+    });
+
+    const existing = await PaymentRefundLog.findOne({ idempotencyKey: resolvedIdempotencyKey });
+    if (existing) {
+      if (['succeeded', 'pending', 'requires_action', 'requested'].includes(existing.status)) {
+        return res.status(200).json({
+          success: true,
+          message: 'Refund request already exists for this idempotency key',
+          data: { refundLog: existing, idempotentReplay: true }
+        });
+      }
+
+      return res.status(409).json({
+        success: false,
+        message: 'A failed/canceled refund request already uses this idempotency key. Use a new key to retry.'
+      });
+    }
+
+    refundLog = await PaymentRefundLog.create({
+      paymentIntentId: normalizedPaymentIntentId,
+      sourceModel: source.sourceModel,
+      sourceId: source.doc._id,
+      sourcePaymentField: source.sourcePaymentField,
+      amount: finalRefundAmountCents / 100,
+      currency: (paymentIntent.currency || 'usd').toLowerCase(),
+      reason: normalizedReason,
+      note: normalizedNote,
+      status: 'requested',
+      idempotencyKey: resolvedIdempotencyKey,
+      metadata: {
+        paymentIntentStatus: paymentIntent.status,
+        capturedAmount: capturedAmountCents / 100,
+        alreadyRefundedAmount: alreadyRefundedCents / 100,
+        remainingRefundableAmount: remainingRefundableCents / 100
+      },
+      refundedByAdminId: req.admin._id
+    });
+
+    const stripeReason = STRIPE_REFUND_REASONS.includes(normalizedReason)
+      ? normalizedReason
+      : undefined;
+
+    const refundPayload = {
+      payment_intent: normalizedPaymentIntentId,
+      metadata: {
+        adminId: req.admin._id.toString(),
+        sourceModel: source.sourceModel,
+        sourceId: source.doc._id.toString(),
+        note: normalizedNote || ''
+      }
+    };
+
+    if (finalRefundAmountCents !== remainingRefundableCents) {
+      refundPayload.amount = finalRefundAmountCents;
+    }
+    if (stripeReason) {
+      refundPayload.reason = stripeReason;
+    }
+
+    const refund = await stripe.refunds.create(
+      refundPayload,
+      { idempotencyKey: resolvedIdempotencyKey }
+    );
+
+    refundLog.refundId = refund.id || null;
+    refundLog.status = refund.status || 'pending';
+    refundLog.stripeError = null;
+    refundLog.metadata = {
+      ...refundLog.metadata,
+      stripeReason: stripeReason || null,
+      stripeRefundStatus: refund.status || null
+    };
+    await refundLog.save();
+
+    let localStatusUpdated = false;
+    const isFullRefund = finalRefundAmountCents === remainingRefundableCents;
+    if (isFullRefund && refund.status === 'succeeded') {
+      localStatusUpdated = await markTransactionAsRefunded({
+        sourceModel: source.sourceModel,
+        sourceId: source.doc._id
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Refund processed successfully',
+      data: {
+        refund: {
+          id: refund.id,
+          status: refund.status,
+          amount: (refund.amount || finalRefundAmountCents) / 100,
+          currency: (refund.currency || paymentIntent.currency || 'usd').toLowerCase(),
+          paymentIntentId: normalizedPaymentIntentId
+        },
+        resolvedFrom: {
+          inputReference: normalizedReference,
+          inputType: resolvedTarget.inputType,
+          paymentIntentId: normalizedPaymentIntentId
+        },
+        transaction: {
+          sourceModel: source.sourceModel,
+          sourceId: source.doc._id,
+          sourcePaymentField: source.sourcePaymentField
+        },
+        fullRefundRequested: isFullRefund,
+        localStatusUpdated,
+        refundLogId: refundLog._id
+      }
+    });
+  } catch (error) {
+    if (refundLog) {
+      try {
+        refundLog.status = 'failed';
+        refundLog.stripeError = error.message || 'Refund failed';
+        await refundLog.save();
+      } catch (saveError) {
+        console.error('Failed to persist refund failure log:', saveError);
+      }
+    }
+
+    console.error('Refund transaction error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error processing refund',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Refund Logs (Admin)
+ * GET /api/admin/transactions/refunds
+ * @query page, limit, status, paymentIntentId, sourceModel, refundedByAdminId, from, to, search
+ */
+exports.getRefundLogs = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      paymentIntentId,
+      sourceModel,
+      refundedByAdminId,
+      from,
+      to,
+      search
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const query = {};
+
+    if (status) {
+      query.status = String(status).trim();
+    }
+
+    if (paymentIntentId) {
+      query.paymentIntentId = String(paymentIntentId).trim();
+    }
+
+    if (sourceModel) {
+      query.sourceModel = String(sourceModel).trim();
+    }
+
+    if (refundedByAdminId && mongoose.Types.ObjectId.isValid(refundedByAdminId)) {
+      query.refundedByAdminId = refundedByAdminId;
+    }
+
+    const dateQuery = {};
+    if (from) {
+      const fromDate = new Date(from);
+      if (!Number.isNaN(fromDate.getTime())) {
+        dateQuery.$gte = fromDate;
+      }
+    }
+    if (to) {
+      const toDate = new Date(to);
+      if (!Number.isNaN(toDate.getTime())) {
+        dateQuery.$lte = toDate;
+      }
+    }
+    if (Object.keys(dateQuery).length > 0) {
+      query.createdAt = dateQuery;
+    }
+
+    if (search && String(search).trim()) {
+      const searchRegex = new RegExp(String(search).trim(), 'i');
+      query.$or = [
+        { paymentIntentId: searchRegex },
+        { refundId: searchRegex },
+        { note: searchRegex },
+        { reason: searchRegex },
+        { stripeError: searchRegex }
+      ];
+    }
+
+    const skip = (pageNum - 1) * limitNum;
+
+    const [logs, total] = await Promise.all([
+      PaymentRefundLog.find(query)
+        .populate('refundedByAdminId', 'fullName email role')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      PaymentRefundLog.countDocuments(query)
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        refundLogs: logs,
+        total,
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum),
+        filters: {
+          status: status || null,
+          paymentIntentId: paymentIntentId || null,
+          sourceModel: sourceModel || null,
+          refundedByAdminId: refundedByAdminId || null,
+          from: from || null,
+          to: to || null,
+          search: search || null
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get refund logs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching refund logs',
       error: error.message
     });
   }
